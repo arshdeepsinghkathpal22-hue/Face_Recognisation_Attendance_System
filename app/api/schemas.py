@@ -1,4 +1,6 @@
-from pydantic import BaseModel
+from typing import Any
+
+from pydantic import BaseModel, Field
 
 
 class StudentResponse(BaseModel):
@@ -32,12 +34,30 @@ class SemestersListResponse(BaseModel):
     items: list[SemesterResponse]
 
 
+class AttendanceTypeBreakdownResponse(BaseModel):
+    attended: int
+    held: int
+    pct: int | None
+
+
 class AttendanceRowResponse(BaseModel):
     sl_no: int
+    subject_id: str
     subject_name: str
+    held_l: int = 0
+    held_t: int = 0
+    held_p: int = 0
+    attended_l: int = 0
+    attended_t: int = 0
+    attended_p: int = 0
     current_l_pct: int | None
+    current_t_pct: int | None = None
     current_p_pct: int | None
     overall_pct: int | None
+    lecture: AttendanceTypeBreakdownResponse
+    tutorial: AttendanceTypeBreakdownResponse
+    practical: AttendanceTypeBreakdownResponse
+    overall: AttendanceTypeBreakdownResponse
 
 
 class AttendanceSummaryResponse(BaseModel):
@@ -51,6 +71,7 @@ class AttendanceSummaryResponse(BaseModel):
 class TeacherResponse(BaseModel):
     teacher_id: str
     name: str
+    email: str = ""
 
 
 class TeacherLoginRequest(BaseModel):
@@ -124,9 +145,17 @@ class TeacherAssignmentInput(BaseModel):
     class_type: str
 
 
+class TeacherAssignmentRequest(BaseModel):
+    semester_id: str
+    subject_id: str
+    batch: str
+    class_type: str
+
+
 class TeacherRegisterRequest(BaseModel):
     teacher_id: str
     name: str
+    email: str = ""
     password: str
     assignments: list[TeacherAssignmentInput]
 
@@ -146,6 +175,37 @@ class TeacherRegisterResponse(BaseModel):
     ok: bool
     teacher: TeacherResponse
     assignments: list[TeacherAssignmentResponse]
+
+
+class AdminTeachersListResponse(BaseModel):
+    items: list[TeacherResponse]
+
+
+class AdminStudentsListResponse(BaseModel):
+    items: list[StudentResponse]
+
+
+class StudentSubjectInput(BaseModel):
+    semester_id: str
+    subject_id: str
+
+
+class StudentSubjectResponse(BaseModel):
+    id: int
+    student_id: str
+    semester_id: str
+    semester_label: str
+    subject_id: str
+    subject_name: str
+
+
+class StudentSubjectsUpdateRequest(BaseModel):
+    subjects: list[StudentSubjectInput]
+
+
+class StudentSubjectsResponse(BaseModel):
+    student_id: str
+    subjects: list[StudentSubjectResponse]
 
 
 class TeacherAssignmentsResponse(BaseModel):
@@ -180,12 +240,14 @@ class FrameDetectionResponse(BaseModel):
     distance: float
     status: str = "registered"
     warning: str | None = None
+    debug: dict[str, Any] | None = None
 
 
 class FrameProcessResponse(BaseModel):
     session_id: int
     marked_in_frame: list[FrameDetectionResponse]
     present_students: list[StudentResponse]
+    debug: dict[str, Any] | None = None
 
 
 class SessionAttendanceResponse(BaseModel):
@@ -193,8 +255,16 @@ class SessionAttendanceResponse(BaseModel):
     present_students: list[StudentResponse]
 
 
+class EnrollmentImageResultResponse(BaseModel):
+    filename: str
+    accepted: bool
+    message: str
+
+
 class StudentRegisterResponse(BaseModel):
     ok: bool
     student: StudentResponse
     uploaded_images: int
     valid_images: int
+    rejected_images: int = 0
+    results: list[EnrollmentImageResultResponse] = Field(default_factory=list)

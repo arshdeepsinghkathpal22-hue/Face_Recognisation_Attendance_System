@@ -1,7 +1,13 @@
 import { useCallback, useMemo } from "react";
 
 import StitchIframe from "@/components/StitchIframe";
-import { getAdminTeacherOptions, registerAdminStudent, registerAdminTeacher } from "@/services/api";
+import {
+  getAdminStudents,
+  getAdminTeacherOptions,
+  getAdminTeachers,
+  registerAdminStudent,
+  registerAdminTeacher
+} from "@/services/api";
 import adminTemplate from "../../stitch_exports/admin_register_biometrics.html?raw";
 
 function escapeHtml(value) {
@@ -98,10 +104,11 @@ export default function AdminStitchPage({ admin, onLogout }) {
             <p class="muted" style="margin: 0; font-size: 13px;">Assign subjects and batches this teacher can take attendance for.</p>
           </div>
         </div>
-        <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 18px;">
+        <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 18px;">
           <label>Teacher ID<input data-teacher-field="id" type="text" placeholder="faculty001" /></label>
           <label>Teacher Name<input data-teacher-field="name" type="text" placeholder="Faculty name" /></label>
-          <label>Password<input data-teacher-field="password" type="text" placeholder="Set password" /></label>
+          <label>Email<input data-teacher-field="email" type="email" placeholder="teacher@example.com" /></label>
+          <label>Password<input data-teacher-field="password" type="password" placeholder="Set password" /></label>
         </div>
         <div style="display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; margin-top: 18px; align-items: end;">
           <label>Semester<select data-teacher-field="semester"></select></label>
@@ -121,8 +128,35 @@ export default function AdminStitchPage({ admin, onLogout }) {
         mainContent.insertBefore(teacherPanel, firstGrid || mainContent.firstChild);
       }
 
+      const directoryPanel = doc.createElement("section");
+      directoryPanel.className = "card";
+      directoryPanel.style.cssText = "padding: 24px; margin-bottom: 24px;";
+      directoryPanel.innerHTML = `
+        <div style="display: flex; justify-content: space-between; gap: 16px; align-items: center; flex-wrap: wrap;">
+          <div>
+            <h3 style="margin: 0 0 6px; font-size: 18px;">Saved Records</h3>
+            <p class="muted" style="margin: 0; font-size: 13px;">Persisted teachers and students from the database.</p>
+          </div>
+          <button class="signout" type="button" data-directory-action="refresh">Refresh</button>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 18px;">
+          <div>
+            <h4 style="margin: 0 0 10px; font-size: 14px;">Teachers</h4>
+            <div data-directory-teachers style="display: grid; gap: 8px;"></div>
+          </div>
+          <div>
+            <h4 style="margin: 0 0 10px; font-size: 14px;">Students</h4>
+            <div data-directory-students style="display: grid; gap: 8px;"></div>
+          </div>
+        </div>
+      `;
+      if (mainContent) {
+        teacherPanel.insertAdjacentElement("afterend", directoryPanel);
+      }
+
       const teacherIdInput = teacherPanel.querySelector('[data-teacher-field="id"]');
       const teacherNameInput = teacherPanel.querySelector('[data-teacher-field="name"]');
+      const teacherEmailInput = teacherPanel.querySelector('[data-teacher-field="email"]');
       const teacherPasswordInput = teacherPanel.querySelector('[data-teacher-field="password"]');
       const teacherSemesterSelect = teacherPanel.querySelector('[data-teacher-field="semester"]');
       const teacherSubjectSelect = teacherPanel.querySelector('[data-teacher-field="subject"]');
@@ -135,6 +169,65 @@ export default function AdminStitchPage({ admin, onLogout }) {
 
       let teacherOptions = { semesters: [], batches: [] };
       let teacherAssignments = [];
+
+      const directoryTeachers = directoryPanel.querySelector("[data-directory-teachers]");
+      const directoryStudents = directoryPanel.querySelector("[data-directory-students]");
+      const refreshDirectoryButton = directoryPanel.querySelector('[data-directory-action="refresh"]');
+
+      const renderDirectoryList = (container, items, emptyMessage, renderItem) => {
+        if (!container) {
+          return;
+        }
+        if (!items.length) {
+          container.innerHTML = `<div style="padding: 12px; border: 1px solid #e5e7eb; border-radius: 8px; color: #6b7280; font-size: 12px; font-weight: 700;">${escapeHtml(emptyMessage)}</div>`;
+          return;
+        }
+        container.innerHTML = items.map(renderItem).join("");
+      };
+
+      const loadDirectory = async () => {
+        try {
+          const [teachersResponse, studentsResponse] = await Promise.all([
+            getAdminTeachers(),
+            getAdminStudents()
+          ]);
+          renderDirectoryList(
+            directoryTeachers,
+            teachersResponse.items || [],
+            "No teachers saved yet.",
+            (teacher) => `
+              <div style="padding: 12px; border: 1px solid #e5e7eb; border-radius: 8px; background: #f8fafc;">
+                <div style="font-size: 13px; font-weight: 900;">${escapeHtml(teacher.name)}</div>
+                <div style="font-size: 12px; color: #475569;">${escapeHtml(teacher.teacher_id)}${teacher.email ? ` - ${escapeHtml(teacher.email)}` : ""}</div>
+              </div>
+            `
+          );
+          renderDirectoryList(
+            directoryStudents,
+            studentsResponse.items || [],
+            "No students saved yet.",
+            (student) => `
+              <div style="padding: 12px; border: 1px solid #e5e7eb; border-radius: 8px; background: #f8fafc;">
+                <div style="font-size: 13px; font-weight: 900;">${escapeHtml(student.name)}</div>
+                <div style="font-size: 12px; color: #475569;">${escapeHtml(student.student_id)} - ${escapeHtml(student.batch || student.branch || "-")}</div>
+              </div>
+            `
+          );
+        } catch (apiError) {
+          renderDirectoryList(directoryTeachers, [], apiError.message || "Failed to load teachers.", () => "");
+          renderDirectoryList(directoryStudents, [], apiError.message || "Failed to load students.", () => "");
+        }
+      };
+      void loadDirectory();
+
+      if (refreshDirectoryButton) {
+        const handleRefreshDirectory = (event) => {
+          event.preventDefault();
+          void loadDirectory();
+        };
+        refreshDirectoryButton.addEventListener("click", handleRefreshDirectory);
+        cleanup.push(() => refreshDirectoryButton.removeEventListener("click", handleRefreshDirectory));
+      }
 
       const setTeacherStatus = (message, type = "neutral") => {
         if (!teacherStatus) {
@@ -273,10 +366,11 @@ export default function AdminStitchPage({ admin, onLogout }) {
           event.preventDefault();
           const teacherId = teacherIdInput?.value?.trim() || "";
           const teacherName = teacherNameInput?.value?.trim() || "";
+          const teacherEmail = teacherEmailInput?.value?.trim() || "";
           const teacherPassword = teacherPasswordInput?.value?.trim() || "";
 
-          if (!teacherId || !teacherName || !teacherPassword) {
-            setTeacherStatus("Teacher ID, name, and password are required.", "error");
+          if (!teacherId || !teacherName || !teacherEmail || !teacherPassword) {
+            setTeacherStatus("Teacher ID, name, email, and password are required.", "error");
             return;
           }
           if (!teacherAssignments.length) {
@@ -290,6 +384,7 @@ export default function AdminStitchPage({ admin, onLogout }) {
             const response = await registerAdminTeacher({
               teacher_id: teacherId,
               name: teacherName,
+              email: teacherEmail,
               password: teacherPassword,
               assignments: teacherAssignments.map((item) => ({
                 semester_id: item.semesterId,
@@ -312,8 +407,12 @@ export default function AdminStitchPage({ admin, onLogout }) {
             if (teacherPasswordInput) {
               teacherPasswordInput.value = "";
             }
+            if (teacherEmailInput) {
+              teacherEmailInput.value = "";
+            }
             teacherAssignments = [];
             renderTeacherAssignments();
+            void loadDirectory();
           } catch (apiError) {
             setTeacherStatus(apiError.message || "Teacher registration failed.", "error");
           } finally {
@@ -330,7 +429,8 @@ export default function AdminStitchPage({ admin, onLogout }) {
       registerButton?.parentElement?.insertBefore(statusText, registerButton.parentElement.firstChild);
 
       let selectedFiles = [];
-      const maxUploads = 10;
+      const minUploads = 5;
+      const maxUploads = 15;
       const fileInput = doc.createElement("input");
       fileInput.type = "file";
       fileInput.accept = "image/*";
@@ -344,6 +444,8 @@ export default function AdminStitchPage({ admin, onLogout }) {
         "mt-3 border border-outline-variant/40 bg-surface-container-high text-primary font-body text-sm font-medium py-3 px-8 rounded-DEFAULT hover:bg-surface-container-highest transition-colors flex items-center gap-2";
       liveCaptureButton.innerHTML =
         '<span class="material-symbols-outlined text-sm">photo_camera</span><span>Capture Live Photo</span>';
+      const queueDetails = doc.createElement("div");
+      queueDetails.style.cssText = "display: grid; gap: 8px; margin-top: 12px;";
 
       const cameraModal = doc.createElement("div");
       cameraModal.className = "fixed inset-0 z-[1000] hidden items-center justify-center bg-black/70 p-4";
@@ -358,7 +460,7 @@ export default function AdminStitchPage({ admin, onLogout }) {
             <canvas class="hidden"></canvas>
           </div>
           <div class="mt-3 flex items-center justify-between">
-            <p class="text-xs text-gray-600">Queue: <span data-action="queue-count">0</span>/10</p>
+            <p class="text-xs text-gray-600">Queue: <span data-action="queue-count">0</span>/15</p>
             <button type="button" data-action="capture" class="rounded bg-black px-4 py-2 text-xs font-semibold text-white hover:bg-gray-800">Capture Photo</button>
           </div>
         </div>
@@ -379,6 +481,31 @@ export default function AdminStitchPage({ admin, onLogout }) {
         }
         if (queueCount) {
           queueCount.textContent = String(selectedFiles.length);
+        }
+        if (queueDetails) {
+          queueDetails.innerHTML = selectedFiles.length
+            ? selectedFiles
+                .map(
+                  (file, index) => `
+                    <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 10px; background: #f8fafc;">
+                      <span style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 700; color: #334155;">${escapeHtml(file.name || `Image ${index + 1}`)}</span>
+                      <button type="button" data-remove-image="${index}" style="flex: 0 0 auto; color: #be123c; font-size: 12px; font-weight: 900; background: transparent;">Delete</button>
+                    </div>
+                  `
+                )
+                .join("")
+            : `<div style="border: 1px dashed #cbd5e1; border-radius: 8px; padding: 10px; color: #64748b; font-size: 12px; font-weight: 700;">Add ${minUploads}-${maxUploads} clear single-face images.</div>`;
+
+          queueDetails.querySelectorAll("[data-remove-image]").forEach((button) => {
+            const removeHandler = (event) => {
+              event.preventDefault();
+              const index = Number(button.getAttribute("data-remove-image"));
+              selectedFiles = selectedFiles.filter((_, itemIndex) => itemIndex !== index);
+              updateUploadQueue();
+              setStatus("Image removed. Add a replacement if needed.");
+            };
+            button.addEventListener("click", removeHandler, { once: true });
+          });
         }
       };
 
@@ -521,7 +648,9 @@ export default function AdminStitchPage({ admin, onLogout }) {
 
       if (browseButton?.parentElement) {
         browseButton.insertAdjacentElement("afterend", liveCaptureButton);
+        liveCaptureButton.insertAdjacentElement("afterend", queueDetails);
       }
+      updateUploadQueue();
 
       const handleOpenCamera = (event) => {
         event.preventDefault();
@@ -594,8 +723,8 @@ export default function AdminStitchPage({ admin, onLogout }) {
             setStatus("Please select a batch.", "error");
             return;
           }
-          if (selectedFiles.length === 0) {
-            setStatus("Upload at least one image before registering.", "error");
+          if (selectedFiles.length < minUploads) {
+            setStatus(`Upload or capture at least ${minUploads} clear face images before registering.`, "error");
             return;
           }
 
@@ -613,9 +742,20 @@ export default function AdminStitchPage({ admin, onLogout }) {
             });
 
             setStatus(
-              `Registered ${response.student.name} (${response.student.student_id}) with ${response.valid_images}/${response.uploaded_images} valid image(s).`,
+              `Registered ${response.student.name} (${response.student.student_id}) with ${response.valid_images}/${response.uploaded_images} valid image(s). ${response.rejected_images || 0} rejected.`,
               "success"
             );
+            if (response.results?.length) {
+              queueDetails.innerHTML = response.results
+                .map(
+                  (result) => `
+                    <div style="border: 1px solid ${result.accepted ? "#bbf7d0" : "#fecaca"}; border-radius: 8px; padding: 8px 10px; background: ${result.accepted ? "#f0fdf4" : "#fef2f2"}; font-size: 12px; font-weight: 700; color: ${result.accepted ? "#166534" : "#991b1b"};">
+                      ${escapeHtml(result.filename)} - ${escapeHtml(result.message)}
+                    </div>
+                  `
+                )
+                .join("");
+            }
 
             if (nameInput) {
               nameInput.value = "";
@@ -628,8 +768,25 @@ export default function AdminStitchPage({ admin, onLogout }) {
             }
             fileInput.value = "";
             selectedFiles = [];
-            updateUploadQueue();
+            if (uploadQueueHeading) {
+              uploadQueueHeading.textContent = `Upload Queue (0/${maxUploads})`;
+            }
+            if (queueCount) {
+              queueCount.textContent = "0";
+            }
+            void loadDirectory();
           } catch (apiError) {
+            if (apiError.detail?.results?.length) {
+              queueDetails.innerHTML = apiError.detail.results
+                .map(
+                  (result) => `
+                    <div style="border: 1px solid ${result.accepted ? "#bbf7d0" : "#fecaca"}; border-radius: 8px; padding: 8px 10px; background: ${result.accepted ? "#f0fdf4" : "#fef2f2"}; font-size: 12px; font-weight: 700; color: ${result.accepted ? "#166534" : "#991b1b"};">
+                      ${escapeHtml(result.filename)} - ${escapeHtml(result.message)}
+                    </div>
+                  `
+                )
+                .join("");
+            }
             setStatus(apiError.message || "Registration failed.", "error");
           } finally {
             registerButton.disabled = false;
@@ -656,6 +813,7 @@ export default function AdminStitchPage({ admin, onLogout }) {
         liveCaptureButton.remove();
         cameraModal.remove();
         teacherPanel.remove();
+        directoryPanel.remove();
       };
     },
     [onLogout]

@@ -158,7 +158,8 @@ echo.
 echo   Backend API : http://127.0.0.1:8000
 echo   Web Portal  : http://127.0.0.1:5173
 echo.
-echo   Login:  Teacher/Admin = admin / admin
+echo   Login:  Admin = admin / admin
+echo           Teachers are created from the Admin panel
 echo           Student       = 22BCS001 ya 22BCS002
 echo.
 echo   Dono windows band karne se system stop hoga.

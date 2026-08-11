@@ -2,12 +2,12 @@ import { useState } from "react";
 
 export default function LoginPage({ onStudentLogin, onTeacherLogin, onAdminLogin, error }) {
   const [mode, setMode] = useState("teacher");
-  const [studentId, setStudentId] = useState("admin");
-  const [studentPassword, setStudentPassword] = useState("admin");
-  const [teacherId, setTeacherId] = useState("admin");
-  const [teacherPassword, setTeacherPassword] = useState("admin");
+  const [studentId, setStudentId] = useState("");
+  const [studentPassword, setStudentPassword] = useState("");
+  const [teacherId, setTeacherId] = useState("");
+  const [teacherPassword, setTeacherPassword] = useState("");
   const [adminId, setAdminId] = useState("admin");
-  const [adminPassword, setAdminPassword] = useState("admin");
+  const [adminPassword, setAdminPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -104,12 +104,12 @@ export default function LoginPage({ onStudentLogin, onTeacherLogin, onAdminLogin
               <>
                 <div>
                   <label className="mb-2 block text-sm font-bold text-slate-800" htmlFor="employeeId">
-                    Employee ID
+                    Email or Employee ID
                   </label>
                   <input
                     id="employeeId"
                     className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-950 outline-none transition-all placeholder:text-slate-400 focus:border-cyan-500 focus:bg-white focus:ring-4 focus:ring-cyan-500/15"
-                    placeholder="Enter your Employee ID"
+                    placeholder="Enter your Email or Employee ID"
                     value={teacherId}
                     onChange={(event) => setTeacherId(event.target.value)}
                     autoComplete="off"

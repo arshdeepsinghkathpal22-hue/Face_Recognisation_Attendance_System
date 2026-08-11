@@ -348,26 +348,36 @@ export default function TeacherStitchPage({ teacher, onLogout }) {
         }
 
         logStack.forEach((entry) => {
+          const isSuccess = entry.status === "registered";
           const isMismatch = entry.status === "batch_mismatch";
           const card = doc.createElement("div");
           card.className =
-            isMismatch
+            isSuccess
+              ? "bg-white border border-gray-100 rounded-xl p-5 flex items-center justify-between shadow-sm hover:shadow-md transition-shadow"
+              : isMismatch
               ? "bg-amber-50 border border-amber-200 rounded-xl p-5 flex items-center justify-between shadow-sm hover:shadow-md transition-shadow"
-              : "bg-white border border-gray-100 rounded-xl p-5 flex items-center justify-between shadow-sm hover:shadow-md transition-shadow";
+              : "bg-red-50 border border-red-200 rounded-xl p-5 flex items-center justify-between shadow-sm hover:shadow-md transition-shadow";
           card.innerHTML = `
             <div>
               <p class="text-sm font-semibold text-gray-900">${escapeHtml(entry.name)}</p>
               <p class="text-xs text-gray-500">${escapeHtml(entry.studentId)}</p>
+              ${
+                entry.warning
+                  ? `<p class="text-xs ${isSuccess ? "text-gray-500" : isMismatch ? "text-amber-700" : "text-red-700"} font-semibold mt-1">${escapeHtml(entry.warning)}</p>`
+                  : ""
+              }
             </div>
             <div class="flex flex-col items-center">
-              <div class="${isMismatch ? "bg-amber-500" : "bg-[#128054]"} rounded-full p-0.5 text-white mb-1">
+              <div class="${isSuccess ? "bg-[#128054]" : isMismatch ? "bg-amber-500" : "bg-red-500"} rounded-full p-0.5 text-white mb-1">
                 ${
-                  isMismatch
+                  isSuccess
+                    ? '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M5 13l4 4L19 7" stroke-linecap="round" stroke-linejoin="round" stroke-width="3"></path></svg>'
+                    : isMismatch
                     ? '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>'
-                    : '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M5 13l4 4L19 7" stroke-linecap="round" stroke-linejoin="round" stroke-width="3"></path></svg>'
+                    : '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M6 18L18 6M6 6l12 12" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>'
                 }
               </div>
-              <span class="text-[9px] ${isMismatch ? "text-amber-700" : "text-[#0a6640]"} font-extrabold uppercase mt-1">${isMismatch ? "Batch mismatch" : "Registered"}</span>
+              <span class="text-[9px] ${isSuccess ? "text-[#0a6640]" : isMismatch ? "text-amber-700" : "text-red-700"} font-extrabold uppercase mt-1">${isSuccess ? "Registered" : isMismatch ? "Batch mismatch" : "Not marked"}</span>
             </div>
           `;
           logContainer.appendChild(card);
@@ -437,12 +447,21 @@ export default function TeacherStitchPage({ teacher, onLogout }) {
 
           const frameResult = await processTeacherFrame(activeSessionId, frameBlob, 0.6, "recognize");
           const detections = frameResult.marked_in_frame || [];
+          const frameDebug = frameResult.debug || null;
+          if (frameDebug && doc.defaultView?.console) {
+            doc.defaultView.console.debug("Attendance recognition debug", frameDebug);
+          }
 
           detections.forEach((detection) => {
             if (!detection?.student_id) {
               return;
             }
             const status = detection.status || "registered";
+            if (status === "confirming") {
+              cameraStatus.textContent = detection.warning || `Confirming ${detection.name || detection.student_id}...`;
+              cameraStatus.className = "mt-3 text-xs font-semibold text-cyan-700";
+              return;
+            }
             const detectionKey = `${status}:${detection.student_id}`;
             if (seenDetectionKeys.has(detectionKey)) {
               return;
@@ -452,26 +471,41 @@ export default function TeacherStitchPage({ teacher, onLogout }) {
               studentId: detection.student_id,
               name: detection.name || detection.student_id,
               status,
-              warning: detection.warning || ""
+              warning: detection.warning || detection.debug?.reason || ""
             });
           });
 
-          if (detections.length > 0) {
+          const visibleDetections = detections.filter((detection) => (detection.status || "registered") !== "confirming");
+          if (visibleDetections.length > 0) {
             renderLogStack();
-            const registeredCount = logStack.filter((entry) => entry.status !== "batch_mismatch").length;
+            const registeredCount = logStack.filter((entry) => entry.status === "registered").length;
             const mismatchCount = logStack.filter((entry) => entry.status === "batch_mismatch").length;
+            const rejectedCount = logStack.filter((entry) => entry.status !== "registered" && entry.status !== "batch_mismatch").length;
             cameraStatus.textContent =
-              mismatchCount > 0
+              rejectedCount > 0
+                ? `Camera is live. ${registeredCount} marked, ${rejectedCount} not marked.`
+                : mismatchCount > 0
                 ? `Camera is live. ${registeredCount} marked, ${mismatchCount} batch mismatch.`
                 : `Camera is live. ${registeredCount} student(s) marked.`;
+            const lastDecision = frameDebug?.decisions?.[0];
+            if (lastDecision?.reason && lastDecision.reason !== "attendance_marked") {
+              cameraStatus.textContent += ` ${lastDecision.message || lastDecision.reason}.`;
+            }
             cameraStatus.className =
-              mismatchCount > 0
+              rejectedCount > 0
+                ? "mt-3 text-xs font-semibold text-red-700"
+                : mismatchCount > 0
                 ? "mt-3 text-xs font-semibold text-amber-700"
                 : "mt-3 text-xs font-semibold text-emerald-700";
           }
-        } catch (_error) {
-          cameraStatus.textContent = "Face processing failed. Retrying...";
+        } catch (error) {
+          const status = error?.status ? `HTTP ${error.status}: ` : "";
+          const detail = error?.detail?.message || error?.message || "Face processing failed";
+          cameraStatus.textContent = `${status}${detail}`;
           cameraStatus.className = "mt-3 text-xs font-semibold text-red-600";
+          if (doc.defaultView?.console) {
+            doc.defaultView.console.error("Face processing failed", error);
+          }
         } finally {
           frameInFlight = false;
         }

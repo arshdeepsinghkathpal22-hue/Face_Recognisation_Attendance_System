@@ -13,24 +13,39 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-function renderMetric(value) {
+function formatPct(value) {
   if (value === null || value === undefined) {
-    return '<span class="text-gray-400">—</span>';
-  }
-  if (value < 75) {
-    return `<span class="status-dot bg-red-500"></span><span class="text-red-600 font-bold">${value}%</span>`;
+    return "—";
   }
   return `${value}%`;
 }
 
-function renderOverallMetric(value) {
+function renderMetric(metric) {
+  const held = Number(metric?.held || 0);
+  const attended = Number(metric?.attended || 0);
+  const pct = metric?.pct;
+  if (held <= 0) {
+    return '<span class="text-gray-400">—</span>';
+  }
+  const label = `${attended}/${held} (${formatPct(pct)})`;
+  if (pct !== null && pct !== undefined && pct < 75) {
+    return `<span class="status-dot bg-red-500"></span><span class="text-red-600 font-bold">${label}</span>`;
+  }
+  return label;
+}
+
+function renderOverallMetric(metricOrValue) {
+  const value = typeof metricOrValue === "object" && metricOrValue !== null ? metricOrValue.pct : metricOrValue;
+  const held = typeof metricOrValue === "object" && metricOrValue !== null ? Number(metricOrValue.held || 0) : null;
+  const attended = typeof metricOrValue === "object" && metricOrValue !== null ? Number(metricOrValue.attended || 0) : null;
   if (value === null || value === undefined) {
     return '<span class="text-gray-400">—</span>';
   }
+  const label = held !== null ? `${attended}/${held} (${value}%)` : `${value}%`;
   if (value < 75) {
-    return `<span class="text-red-600">${value}%</span>`;
+    return `<span class="text-red-600">${label}</span>`;
   }
-  return `${value}%`;
+  return label;
 }
 
 function hasSignOutText(node) {
@@ -79,10 +94,10 @@ function buildRowsMarkup(rows) {
       (row) => `
         <tr class="table-row-alt hover:bg-gray-50/30 transition-colors">
           <td class="px-8 py-6 text-sm font-semibold text-gray-800">${escapeHtml(row.subject_name)}</td>
-          <td class="px-8 py-6 text-sm text-center text-gray-600 font-medium">${renderMetric(row.current_l_pct)}</td>
-          <td class="px-8 py-6 text-sm text-center text-gray-400">—</td>
-          <td class="px-8 py-6 text-sm text-center text-gray-600 font-medium">${renderMetric(row.current_p_pct)}</td>
-          <td class="px-8 py-6 text-sm text-center font-bold text-gray-900">${renderOverallMetric(row.overall_pct)}</td>
+          <td class="px-8 py-6 text-sm text-center text-gray-600 font-medium">${renderMetric(row.lecture)}</td>
+          <td class="px-8 py-6 text-sm text-center text-gray-600 font-medium">${renderMetric(row.tutorial)}</td>
+          <td class="px-8 py-6 text-sm text-center text-gray-600 font-medium">${renderMetric(row.practical)}</td>
+          <td class="px-8 py-6 text-sm text-center font-bold text-gray-900">${renderOverallMetric(row.overall)}</td>
         </tr>
       `
     )
@@ -104,8 +119,8 @@ function updateSummaryFields(html, student) {
 }
 
 function computeTotalMetrics(rows, summary) {
-  const heldFromRows = rows.reduce((sum, row) => sum + Number(row.held_l || 0) + Number(row.held_p || 0), 0);
-  const attendedFromRows = rows.reduce((sum, row) => sum + Number(row.attended_l || 0) + Number(row.attended_p || 0), 0);
+  const heldFromRows = rows.reduce((sum, row) => sum + Number(row.overall?.held || 0), 0);
+  const attendedFromRows = rows.reduce((sum, row) => sum + Number(row.overall?.attended || 0), 0);
 
   const totalHeld = Number.isFinite(summary?.total_held) ? summary.total_held : heldFromRows;
   const totalAttended = Number.isFinite(summary?.total_attended) ? summary.total_attended : attendedFromRows;
@@ -130,7 +145,7 @@ function buildTotalAttendanceMarkup(rows, summary) {
           <span class="text-gray-500"> / ${totalHeld} classes attended</span>
         </p>
       </div>
-      <p class="mt-2 text-2xl font-extrabold text-gray-900" style="margin: 12px 0 0; font-size: 28px; font-weight: 900; color: #111827;">${renderOverallMetric(totalPct)}</p>
+      <p class="mt-2 text-2xl font-extrabold text-gray-900" style="margin: 12px 0 0; font-size: 28px; font-weight: 900; color: #111827;">${formatPct(totalPct)}</p>
     </section>
   `;
 }

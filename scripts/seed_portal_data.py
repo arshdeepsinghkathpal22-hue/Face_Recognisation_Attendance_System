@@ -17,6 +17,7 @@ from app.db import (
     upsert_session_attendance,
     upsert_student,
     upsert_student_profile,
+    upsert_student_subject,
     upsert_subject,
     upsert_teacher_user,
 )
@@ -101,12 +102,23 @@ def seed_data(payload: dict, db_path: str) -> None:
             db_path=db_path,
         )
 
+    student_subjects = payload.get("student_subjects", [])
+    for item in student_subjects:
+        _require_keys(item, ["student_id", "semester_id", "subject_id"], "student_subjects")
+        upsert_student_subject(
+            student_id=item["student_id"],
+            semester_id=item["semester_id"],
+            subject_id=item["subject_id"],
+            db_path=db_path,
+        )
+
     teachers = payload.get("teachers", [])
     for item in teachers:
         _require_keys(item, ["teacher_id", "name", "password"], "teachers")
         upsert_teacher_user(
             teacher_id=item["teacher_id"],
             name=item["name"],
+            email=item.get("email", ""),
             password=item["password"],
             db_path=db_path,
         )
@@ -124,7 +136,7 @@ def seed_data(payload: dict, db_path: str) -> None:
             "class_sessions",
         )
         class_type = str(item["class_type"]).upper()
-        if class_type not in {"L", "P"}:
+        if class_type not in {"L", "T", "P"}:
             raise ValueError(f"Invalid class_type in class_sessions: {class_type}")
         upsert_class_session(
             session_id=int(item["id"]),
@@ -156,6 +168,7 @@ def seed_data(payload: dict, db_path: str) -> None:
     print(f"admins: {len(admins)}")
     print(f"semesters: {len(semesters)}")
     print(f"subjects: {len(subjects)}")
+    print(f"student_subjects: {len(student_subjects)}")
     print(f"class_sessions: {len(class_sessions)}")
     print(f"session_attendance: {len(session_attendance)}")
 

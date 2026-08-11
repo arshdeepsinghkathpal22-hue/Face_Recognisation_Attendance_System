@@ -1,5 +1,4 @@
-from pathlib import Path
-import shutil
+import sqlite3
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 
@@ -9,29 +8,43 @@ from app.api.schemas import (
     AdminMeResponse,
     AdminResponse,
     AdminSemesterOptionResponse,
+    AdminStudentsListResponse,
     AdminSubjectOptionResponse,
     AdminTeacherOptionsResponse,
+    AdminTeachersListResponse,
     StudentRegisterResponse,
     StudentResponse,
+    StudentSubjectsResponse,
+    StudentSubjectsUpdateRequest,
+    StudentSubjectResponse,
     TeacherAssignmentResponse,
+    TeacherAssignmentRequest,
     TeacherRegisterRequest,
     TeacherRegisterResponse,
     TeacherResponse,
 )
-from app.config import ENCODINGS_PATH, STUDENTS_DIR
 from app.db import (
+    delete_teacher_assignment,
     get_admin_user,
     get_student_with_profile,
+    get_teacher_user,
     list_active_semesters,
     list_batches,
+    list_students,
+    list_student_subjects,
     list_subjects_for_semester,
     list_teacher_assignments,
+    list_teacher_users,
     replace_teacher_assignments,
-    upsert_student,
-    upsert_student_profile,
+    replace_student_subjects,
+    update_admin_password,
+    update_teacher_assignment,
+    upsert_teacher_assignment,
     upsert_teacher_user,
 )
-from app.face_utils import enroll_from_images
+from app.face_utils import EnrollmentValidationError
+from app.security import hash_password, password_needs_rehash, verify_password
+from app.services.enrollment_service import enroll_student_uploads
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -52,8 +65,10 @@ def _get_authenticated_admin(request: Request) -> AdminResponse:
 @router.post("/auth/login", response_model=AdminLoginResponse)
 def admin_login(payload: AdminLoginRequest, request: Request) -> AdminLoginResponse:
     admin = get_admin_user(admin_id=payload.admin_id, db_path=request.app.state.db_path)
-    if admin is None or admin["password"] != payload.password:
+    if admin is None or not verify_password(payload.password, admin["password"]):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin credentials")
+    if password_needs_rehash(admin["password"]):
+        update_admin_password(payload.admin_id, hash_password(payload.password), db_path=request.app.state.db_path)
 
     request.session["admin_id"] = payload.admin_id
     request.session.pop("teacher_id", None)
@@ -114,6 +129,74 @@ def admin_teacher_options(
     )
 
 
+@router.get("/teachers", response_model=AdminTeachersListResponse)
+def admin_list_teachers(
+    request: Request,
+    _: AdminResponse = Depends(_get_authenticated_admin),
+) -> AdminTeachersListResponse:
+    teachers = list_teacher_users(db_path=request.app.state.db_path)
+    return AdminTeachersListResponse(items=[TeacherResponse(**teacher) for teacher in teachers])
+
+
+@router.get("/students", response_model=AdminStudentsListResponse)
+def admin_list_students(
+    request: Request,
+    _: AdminResponse = Depends(_get_authenticated_admin),
+) -> AdminStudentsListResponse:
+    students = list_students(db_path=request.app.state.db_path)
+    return AdminStudentsListResponse(items=[StudentResponse(**student) for student in students])
+
+
+@router.get("/students/{student_id}/subjects", response_model=StudentSubjectsResponse)
+def admin_get_student_subjects(
+    student_id: str,
+    request: Request,
+    _: AdminResponse = Depends(_get_authenticated_admin),
+) -> StudentSubjectsResponse:
+    db_path = request.app.state.db_path
+    student = get_student_with_profile(student_id=student_id, db_path=db_path)
+    if student is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found")
+    rows = list_student_subjects(student_id=student_id, db_path=db_path)
+    return StudentSubjectsResponse(
+        student_id=student_id,
+        subjects=[StudentSubjectResponse(**row) for row in rows],
+    )
+
+
+@router.put("/students/{student_id}/subjects", response_model=StudentSubjectsResponse)
+def admin_replace_student_subjects(
+    student_id: str,
+    payload: StudentSubjectsUpdateRequest,
+    request: Request,
+    _: AdminResponse = Depends(_get_authenticated_admin),
+) -> StudentSubjectsResponse:
+    db_path = request.app.state.db_path
+    student = get_student_with_profile(student_id=student_id, db_path=db_path)
+    if student is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found")
+
+    normalized_subjects = []
+    for item in payload.subjects:
+        semester_id = item.semester_id.strip()
+        subject_id = item.subject_id.strip()
+        subjects = list_subjects_for_semester(semester_id=semester_id, db_path=db_path)
+        if not any(subject["id"] == subject_id for subject in subjects):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Subject does not belong to selected semester")
+        normalized_subjects.append({"semester_id": semester_id, "subject_id": subject_id})
+
+    replace_student_subjects(
+        student_id=student_id,
+        subject_refs=normalized_subjects,
+        db_path=db_path,
+    )
+    rows = list_student_subjects(student_id=student_id, db_path=db_path)
+    return StudentSubjectsResponse(
+        student_id=student_id,
+        subjects=[StudentSubjectResponse(**row) for row in rows],
+    )
+
+
 @router.post("/teachers/register", response_model=TeacherRegisterResponse)
 def register_teacher_via_admin(
     payload: TeacherRegisterRequest,
@@ -123,10 +206,11 @@ def register_teacher_via_admin(
     db_path = request.app.state.db_path
     teacher_id = payload.teacher_id.strip()
     teacher_name = payload.name.strip()
+    teacher_email = payload.email.strip().lower()
     password = payload.password.strip()
 
-    if not teacher_id or not teacher_name or not password:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Teacher ID, name, and password are required")
+    if not teacher_id or not teacher_name or not teacher_email or not password:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Teacher ID, name, email, and password are required")
     if not payload.assignments:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Add at least one subject/batch assignment")
 
@@ -138,8 +222,8 @@ def register_teacher_via_admin(
         class_type = assignment.class_type.strip().upper()
         if not semester_id or not subject_id or not batch:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Assignment semester, subject, and batch are required")
-        if class_type not in {"L", "P"}:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Class type must be L or P")
+        if class_type not in {"L", "T", "P"}:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Class type must be L, T, or P")
 
         subjects = list_subjects_for_semester(semester_id=semester_id, db_path=db_path)
         if not any(subject["id"] == subject_id for subject in subjects):
@@ -154,24 +238,120 @@ def register_teacher_via_admin(
             }
         )
 
-    upsert_teacher_user(
-        teacher_id=teacher_id,
-        name=teacher_name,
-        password=password,
-        db_path=db_path,
-    )
-    replace_teacher_assignments(
-        teacher_id=teacher_id,
-        assignments=normalized_assignments,
-        db_path=db_path,
-    )
+    try:
+        upsert_teacher_user(
+            teacher_id=teacher_id,
+            name=teacher_name,
+            email=teacher_email,
+            password=password,
+            db_path=db_path,
+        )
+        replace_teacher_assignments(
+            teacher_id=teacher_id,
+            assignments=normalized_assignments,
+            db_path=db_path,
+        )
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Teacher ID or email already exists",
+        ) from exc
     assignments = list_teacher_assignments(teacher_id=teacher_id, db_path=db_path)
 
     return TeacherRegisterResponse(
         ok=True,
-        teacher=TeacherResponse(teacher_id=teacher_id, name=teacher_name),
+        teacher=TeacherResponse(teacher_id=teacher_id, name=teacher_name, email=teacher_email),
         assignments=[TeacherAssignmentResponse(**item) for item in assignments],
     )
+
+
+def _validate_assignment_payload(payload: TeacherAssignmentRequest, db_path: str) -> dict:
+    semester_id = payload.semester_id.strip()
+    subject_id = payload.subject_id.strip()
+    batch = payload.batch.strip()
+    class_type = payload.class_type.strip().upper()
+    if not semester_id or not subject_id or not batch:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Assignment semester, subject, and batch are required")
+    if class_type not in {"L", "T", "P"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Class type must be L, T, or P")
+    subjects = list_subjects_for_semester(semester_id=semester_id, db_path=db_path)
+    if not any(subject["id"] == subject_id for subject in subjects):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Subject does not belong to selected semester")
+    return {
+        "semester_id": semester_id,
+        "subject_id": subject_id,
+        "batch": batch,
+        "class_type": class_type,
+    }
+
+
+@router.post("/teachers/{teacher_id}/assignments", response_model=TeacherAssignmentResponse)
+def create_teacher_assignment_via_admin(
+    teacher_id: str,
+    payload: TeacherAssignmentRequest,
+    request: Request,
+    _: AdminResponse = Depends(_get_authenticated_admin),
+) -> TeacherAssignmentResponse:
+    db_path = request.app.state.db_path
+    teacher = get_teacher_user(teacher_id=teacher_id, db_path=db_path)
+    if teacher is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Teacher not found")
+    assignment = _validate_assignment_payload(payload, db_path)
+    assignment_id = upsert_teacher_assignment(
+        teacher_id=teacher_id,
+        semester_id=assignment["semester_id"],
+        subject_id=assignment["subject_id"],
+        batch=assignment["batch"],
+        class_type=assignment["class_type"],
+        db_path=db_path,
+    )
+    rows = list_teacher_assignments(teacher_id=teacher_id, db_path=db_path)
+    saved = next((row for row in rows if row["id"] == assignment_id), None)
+    if saved is None:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Assignment save failed")
+    return TeacherAssignmentResponse(**saved)
+
+
+@router.put("/teacher-assignments/{assignment_id}", response_model=TeacherAssignmentResponse)
+def update_teacher_assignment_via_admin(
+    assignment_id: int,
+    payload: TeacherAssignmentRequest,
+    request: Request,
+    _: AdminResponse = Depends(_get_authenticated_admin),
+) -> TeacherAssignmentResponse:
+    db_path = request.app.state.db_path
+    assignment = _validate_assignment_payload(payload, db_path)
+    try:
+        update_teacher_assignment(
+            assignment_id=assignment_id,
+            semester_id=assignment["semester_id"],
+            subject_id=assignment["subject_id"],
+            batch=assignment["batch"],
+            class_type=assignment["class_type"],
+            db_path=db_path,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    teachers = list_teacher_users(db_path=db_path)
+    for teacher in teachers:
+        for row in list_teacher_assignments(teacher_id=teacher["teacher_id"], db_path=db_path):
+            if row["id"] == assignment_id:
+                return TeacherAssignmentResponse(**row)
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assignment not found")
+
+
+@router.delete("/teacher-assignments/{assignment_id}")
+def delete_teacher_assignment_via_admin(
+    assignment_id: int,
+    request: Request,
+    _: AdminResponse = Depends(_get_authenticated_admin),
+) -> dict:
+    try:
+        delete_teacher_assignment(assignment_id=assignment_id, db_path=request.app.state.db_path)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return {"ok": True}
 
 
 @router.post("/students/register", response_model=StudentRegisterResponse)
@@ -191,57 +371,35 @@ async def register_student_via_admin(
     normalized_batch = (batch.strip() or normalized_branch)
 
     if not images:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Upload at least one image")
-
-    images_dir = Path(STUDENTS_DIR) / normalized_student_id
-    if images_dir.exists():
-        shutil.rmtree(images_dir)
-    images_dir.mkdir(parents=True, exist_ok=True)
-
-    allowed_exts = {".jpg", ".jpeg", ".png"}
-    uploaded_count = 0
-    for index, upload in enumerate(images, start=1):
-        suffix = Path(upload.filename or "").suffix.lower()
-        if suffix not in allowed_exts:
-            suffix = ".jpg"
-        image_bytes = await upload.read()
-        if not image_bytes:
-            continue
-        output_path = images_dir / f"admin_{index:03d}{suffix}"
-        output_path.write_bytes(image_bytes)
-        uploaded_count += 1
-
-    if uploaded_count == 0:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No valid image content uploaded")
-
-    upsert_student(student_id=normalized_student_id, name=normalized_name, db_path=db_path)
-    upsert_student_profile(
-        student_id=normalized_student_id,
-        branch=normalized_branch,
-        batch=normalized_batch,
-        db_path=db_path,
-    )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Upload/capture 5-15 face images")
 
     try:
-        valid_images = enroll_from_images(
+        enrollment = await enroll_student_uploads(
             student_id=normalized_student_id,
             name=normalized_name,
-            images_dir=images_dir,
-            encodings_path=ENCODINGS_PATH,
+            branch=normalized_branch,
+            batch=normalized_batch,
+            images=images,
+            db_path=db_path,
+            filename_prefix="admin",
         )
+        from app.api.teacher import _invalidate_known_faces_cache
+
+        _invalidate_known_faces_cache()
+    except EnrollmentValidationError as exc:
+        detail = {"message": str(exc), "results": exc.results}
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from exc
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Enrollment failed: {exc}",
         ) from exc
 
-    student = get_student_with_profile(student_id=normalized_student_id, db_path=db_path)
-    if student is None:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Student save failed")
-
     return StudentRegisterResponse(
         ok=True,
-        student=StudentResponse(**student),
-        uploaded_images=uploaded_count,
-        valid_images=valid_images,
+        student=StudentResponse(**enrollment["student"]),
+        uploaded_images=enrollment["uploaded_images"],
+        valid_images=enrollment["valid_images"],
+        rejected_images=enrollment["rejected_images"],
+        results=enrollment["results"],
     )

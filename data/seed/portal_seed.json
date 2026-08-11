@@ -71,6 +71,68 @@
       "sort_order": 2
     }
   ],
+  "student_subjects": [
+    {
+      "student_id": "22BCS001",
+      "semester_id": "fall-2024",
+      "subject_id": "ENV"
+    },
+    {
+      "student_id": "22BCS001",
+      "semester_id": "fall-2024",
+      "subject_id": "DAA"
+    },
+    {
+      "student_id": "22BCS001",
+      "semester_id": "fall-2024",
+      "subject_id": "DAALAB"
+    },
+    {
+      "student_id": "22BCS001",
+      "semester_id": "fall-2024",
+      "subject_id": "SE"
+    },
+    {
+      "student_id": "22BCS001",
+      "semester_id": "spring-2025",
+      "subject_id": "CN"
+    },
+    {
+      "student_id": "22BCS001",
+      "semester_id": "spring-2025",
+      "subject_id": "DISCRMATH"
+    },
+    {
+      "student_id": "22BCS002",
+      "semester_id": "fall-2024",
+      "subject_id": "ENV"
+    },
+    {
+      "student_id": "22BCS002",
+      "semester_id": "fall-2024",
+      "subject_id": "DAA"
+    },
+    {
+      "student_id": "22BCS002",
+      "semester_id": "fall-2024",
+      "subject_id": "DAALAB"
+    },
+    {
+      "student_id": "22BCS002",
+      "semester_id": "fall-2024",
+      "subject_id": "SE"
+    },
+    {
+      "student_id": "22BCS002",
+      "semester_id": "spring-2025",
+      "subject_id": "CN"
+    },
+    {
+      "student_id": "22BCS002",
+      "semester_id": "spring-2025",
+      "subject_id": "DISCRMATH"
+    }
+  ],
   "class_sessions": [
     {
       "id": 1,
@@ -907,33 +969,7 @@
       "present": 0
     }
   ],
-  "teachers": [
-    {
-      "teacher_id": "admin",
-      "name": "Faculty Demo",
-      "password": "admin",
-      "assignments": [
-        {
-          "semester_id": "fall-2024",
-          "subject_id": "DAA",
-          "batch": "CSE",
-          "class_type": "L"
-        },
-        {
-          "semester_id": "fall-2024",
-          "subject_id": "DAALAB",
-          "batch": "CSE",
-          "class_type": "P"
-        },
-        {
-          "semester_id": "spring-2025",
-          "subject_id": "CN",
-          "batch": "CSE",
-          "class_type": "L"
-        }
-      ]
-    }
-  ],
+  "teachers": [],
   "admins": [
     {
       "admin_id": "admin",

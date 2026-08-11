@@ -4,10 +4,23 @@ const BASE_HEADERS = {
 
 async function parseResponse(response) {
   const text = await response.text();
-  const data = text ? JSON.parse(text) : {};
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch (_error) {
+    data = { detail: text || "Request failed" };
+  }
   if (!response.ok) {
     const detail = data?.detail || "Request failed";
-    throw new Error(detail);
+    if (typeof detail === "object" && detail !== null) {
+      const error = new Error(detail.message || "Request failed");
+      error.detail = detail;
+      error.status = response.status;
+      throw error;
+    }
+    const error = new Error(detail);
+    error.status = response.status;
+    throw error;
   }
   return data;
 }
@@ -220,6 +233,22 @@ export async function registerAdminTeacher(payload) {
     credentials: "include",
     headers: BASE_HEADERS,
     body: JSON.stringify(payload)
+  });
+  return parseResponse(response);
+}
+
+export async function getAdminTeachers() {
+  const response = await fetch("/api/admin/teachers", {
+    method: "GET",
+    credentials: "include"
+  });
+  return parseResponse(response);
+}
+
+export async function getAdminStudents() {
+  const response = await fetch("/api/admin/students", {
+    method: "GET",
+    credentials: "include"
   });
   return parseResponse(response);
 }
