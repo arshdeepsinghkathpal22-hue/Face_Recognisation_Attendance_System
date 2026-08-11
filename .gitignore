@@ -1,11 +1,17 @@
+# Python
 .venv/
 __pycache__/
 *.pyc
 .DS_Store
 
-# Local data and outputs
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Local data and generated outputs
 attendance.db
-data/models/*.pkl
+data/models/*.pkl*
 data/students/*
 !data/students/.gitkeep
 reports/*.csv

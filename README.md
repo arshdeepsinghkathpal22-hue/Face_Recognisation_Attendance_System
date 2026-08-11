@@ -1,381 +1,182 @@
-# FaceGrid - Face Recognition Attendance System
+# Face Recognition Attendance System
 
-FaceGrid ek Windows-ready attendance portal hai jisme teacher live camera se attendance mark kar sakta hai, admin/student biometric profile register kar sakta hai, aur student apni attendance summary dekh sakta hai.
+This project is a face recognition-based attendance system designed for educational institutions. It provides a web portal for teachers to mark attendance using a live camera feed, an admin panel for managing student and teacher data, and a dashboard for students to view their attendance records.
 
-## Quick Start
+## Features
 
-### 1. Required Software
+*   **Role-Based Access**: Separate portals for Admin, Teacher, and Student roles.
+*   **Live Attendance**: Teachers can start a class session and mark attendance in real-time using a webcam.
+*   **Student Enrollment**: Admins can register new students by uploading face images or capturing them live.
+*   **Teacher & Class Management**: Admins can register teachers and assign them to specific subjects, semesters, and batches.
+*   **Attendance Dashboard**: Students can log in to view their overall and subject-wise attendance percentages.
+*   **Batch Validation**: The system checks if a recognized student belongs to the correct batch for the ongoing class session.
+*   **Local Database**: Uses SQLite for simple, file-based data storage.
+*   **Windows Scripts**: Includes batch scripts for easy setup and execution on Windows.
 
-Install these first:
+## Technology Stack
 
-1. Python 3.10 ya 3.11 for Windows  
-   Install karte time **Add python.exe to PATH** tick karo.
-2. Node.js LTS  
-   Download: <https://nodejs.org>
-3. Agar `dlib` ya `face-recognition` install me error aaye, Visual Studio Build Tools install karo:
+*   **Backend**:
+    *   Python 3.10 / 3.11
+    *   FastAPI
+    *   Uvicorn
+    *   Pytest for testing
+*   **Face Recognition**:
+    *   `face-recognition` library (built on `dlib`)
+    *   OpenCV (`opencv-python`)
+    *   HOG-based model for face detection
+    *   ResNet-based model for 128-d facial embeddings
+    *   NumPy
+*   **Frontend**:
+    *   React 18
+    *   Vite
+    *   Tailwind CSS
+    *   shadcn/ui & Radix UI for components
+*   **Database**:
+    *   SQLite
 
-```bat
-winget install Microsoft.VisualStudio.2022.BuildTools
+## Project Structure
+
+```
+app/                    # FastAPI backend source code
+├── api/                # API route definitions (teacher, student, admin)
+└── services/           # Business logic for enrollment and attendance
+frontend/               # React frontend source code
+├── src/pages/          # Main pages for each user role
+└── src/components/     # Reusable React components
+scripts/                # Helper scripts for setup, db init, and enrollment
+data/
+├── students/           # Stores student face images, organized by student ID
+└── seed/               # JSON file with initial data for seeding
+tests/                  # Backend API tests
+batch_files/            # Utility .bat scripts
+attendance.db           # SQLite database file (created on first run)
+encodings.pkl           # Stores generated face encodings (created after enrollment)
 ```
 
-Installer open hone ke baad **Desktop development with C++** select karo.
+## Setup and Installation
 
-### 2. App Start Karna
+This project is optimized for Windows.
 
-Project folder me `START.bat` double-click karo.
+### 1. Prerequisites
 
-`START.bat` ye sab automatically karega:
+1.  **Python**: Version 3.10 or 3.11. During installation, ensure you check **"Add python.exe to PATH"**.
+2.  **Node.js**: LTS version. Download from nodejs.org.
+3.  **C++ Build Tools**: Required for compiling the `dlib` dependency. If you encounter errors during package installation, install Visual Studio Build Tools.
+    ```sh
+    winget install Microsoft.VisualStudio.2022.BuildTools
+    ```
+    In the installer, select the **"Desktop development with C++"** workload.
 
-- Python version check
-- Node.js check
-- `.venv` virtual environment create
-- Python dependencies install
-- SQLite database `attendance.db` initialize
-- Demo data seed
-- Frontend dependencies install
-- Backend API start
-- Frontend portal start
-- Browser open
+### 2. Running the Application
 
-URLs:
+The simplest way to get started is to use the main startup script.
 
-- Web Portal: `http://127.0.0.1:5173`
-- Backend API: `http://127.0.0.1:8000`
+1.  Double-click `START.bat` in the project's root directory.
 
-Important: Backend aur frontend ki jo command windows khulti hain unhe band mat karo. Dono windows band kar doge to app stop ho jayegi.
+This script automates the entire setup process:
+*   Checks for Python and Node.js.
+*   Creates a Python virtual environment (`.venv`).
+*   Installs all required Python (`requirements.txt`) and Node.js (`package.json`) dependencies.
+*   Initializes the SQLite database (`attendance.db`) and seeds it with sample data on the first run.
+*   Starts the backend and frontend servers in separate terminal windows.
+*   Opens the web portal in your default browser.
 
-## Login Credentials
+**Important**: Do not close the two new terminal windows that open (one for the backend, one for the frontend). Closing them will stop the application.
+
+*   **Web Portal**: `http://127.0.0.1:5173`
+*   **Backend API**: `http://127.0.0.1:8000`
+
+## Application Walkthrough
+
+### Default Login Credentials
 
 | Role | Login ID | Password |
 | --- | --- | --- |
-| Faculty / Teacher | `admin` | `admin` |
-| Admin | `admin` | `admin` |
+| Admin / Teacher | `admin` | `admin` |
 | Student | `22BCS001` | `22BCS001` |
 | Student | `22BCS002` | `22BCS002` |
 
-Student login me password same enrollment number hota hai.
+### 1. Admin: Register a Teacher
 
-## Teacher Portal - Kaise Use Karna Hai
+1.  Log in as **Admin** (`admin`/`admin`).
+2.  Use the "Register New Teacher" panel to create a new teacher profile.
+3.  Assign subjects, semesters, and batches to the teacher.
+4.  Click **Register Teacher**.
 
-1. Browser me `http://127.0.0.1:5173` open karo.
-2. Login screen par **Faculty** select karo.
-3. Employee ID: `admin`
-4. Password: `admin`
-5. Login ke baad teacher dashboard open hoga.
-6. Class list me se class choose karo, jaise:
-   - Computer Networks - F6
-   - DAA Batch F5F6
-   - DAA LAB F6
-   - Competitive Programming Lab F5
-   - Discrete Maths - F10
-7. Kisi class ke saamne **Select** dabao.
-8. App attendance session start karega aur live camera page kholega.
-9. Browser camera permission maange to **Allow** karo.
-10. Camera ke saamne enrolled student ka face aane par attendance automatically mark hogi.
-11. Right side **Attendance Log** me marked students dikhenge.
-12. Agar student selected batch/class se match nahi karta, batch mismatch warning aa sakti hai.
-13. Class complete hone ke baad **Stop & Submit Attendance** dabao.
-14. Logout ke liye top-right **Sign Out** use karo.
+### 2. Admin: Enroll a Student
 
-Teacher portal ki main functionality:
+1.  On the Admin dashboard, stay on the "Register Biometrics" page.
+2.  Fill in the student's details (Name, Enrollment No, Batch).
+3.  Upload 5-10 clear photos of the student's face or use the webcam to capture them.
+4.  Click **Register Profile**. The system will process the images, generate face encodings, and save the student's profile.
 
-- Teacher login/logout
-- Assigned classes load karna
-- Subject, semester, batch ke basis par session start karna
-- Live webcam attendance
-- Face recognition ke through present mark karna
-- Duplicate marking avoid karna
-- Batch mismatch detect karna
-- Attendance log live update
-- Session stop/submit
+### 3. Teacher: Take Attendance
 
-## Student Portal - Kaise Use Karna Hai
+1.  Log out and log back in as **Faculty** using the credentials you created.
+2.  The dashboard will show the classes assigned to you.
+3.  Click **Select** next to a class to start an attendance session.
+4.  Allow browser permission for the camera.
+5.  As enrolled students appear before the camera, their attendance will be marked automatically and will appear in the "Attendance Log".
+6.  Once the class is over, click **Stop & Submit Attendance**.
 
-1. Browser me `http://127.0.0.1:5173` open karo.
-2. Login screen par **Student** select karo.
-3. Enrollment Number enter karo, example: `22BCS001`.
-4. Password me bhi same enrollment number enter karo: `22BCS001`.
-5. Login ke baad student dashboard open hoga.
+### 4. Student: View Attendance
 
-Student dashboard me ye dikhta hai:
+1.  Log in as **Student** (e.g., `22BCS001`/`22BCS001`).
+2.  The dashboard displays the student's attendance summary, including overall and subject-wise percentages.
 
-- Student name
-- Enrollment number
-- Batch
-- Total recorded attendance
-- Subject-wise attendance
-- Lecture percentage
-- Practical percentage
-- Overall percentage
-- Low attendance warning color, agar attendance 75 percent se kam ho
+## Command-Line Utilities
 
-Logout ke liye **Sign Out** dabao.
+The project includes several batch scripts for common operations.
 
-## Admin Portal - Kaise Use Karna Hai
+### Student Enrollment via CLI
 
-1. Browser me `http://127.0.0.1:5173` open karo.
-2. Login screen par **Admin** select karo.
-3. Admin ID: `admin`
-4. Password: `admin`
-5. Login ke baad **Register Biometrics** page open hoga.
+You can enroll a student directly from image files without using the web UI.
 
-Naya student register karne ke steps:
+1.  Create a folder for the student inside `data/students/` using their ID as the folder name.
+2.  Place their face images (e.g., `.jpg`, `.png`) inside this folder.
+    ```
+    data/students/22BCS010/photo1.jpg
+    data/students/22BCS010/photo2.jpg
+    ```
+3.  Double-click `ENROLL_STUDENT.bat`.
+4.  Follow the prompts to enter the student's ID, name, and branch. The script will then generate and save the face encodings.
 
-1. Student Name fill karo.
-2. Enrollment Number fill karo.
-3. Batch select karo.
-4. Student ki clear face images upload karo using **Browse Files**.
-5. Ya **Capture Live Photo** se webcam se photo capture karo.
-6. 1 se 10 images queue me add ho sakti hain.
-7. **Register Profile** dabao.
-8. System photos save karega, face encodings banayega, aur student DB me add/update karega.
+### Rebuild All Encodings
 
-Admin portal ki main functionality:
+If you add or change student photos manually, you may need to rebuild the entire `encodings.pkl` file.
 
-- Admin login/logout
-- New teacher add/register
-- Teacher ko subject, semester, batch, aur lecture/practical assignment dena
-- Student biometric registration
-- Multiple image upload
-- Live camera photo capture
-- Batch assign
-- Face encoding rebuild/update
-- Existing student profile update
+*   Run `REBUILD_ENCODINGS.bat` to re-process all images in the `data/students/` directory.
 
-Naya teacher add karne ke steps:
+### Other Scripts
 
-1. Admin portal me login karo: `admin` / `admin`.
-2. Top par **Register New Teacher** panel dikhega.
-3. Teacher ID fill karo, example: `faculty001`.
-4. Teacher Name fill karo.
-5. Password set karo.
-6. Semester, Subject, Batch, aur Type select karo.
-7. **Add Assignment** dabao.
-8. Zarurat ho to multiple assignments add karo.
-9. **Register Teacher** dabao.
-10. Logout karke **Faculty** login me naye Teacher ID/password se login karo.
-
-Note: Teacher sirf wahi classes dekh paayega jo admin ne assignment me add ki hain.
-
-## Interview Demo Checklist
-
-Interview se pehle ye quick flow run kar lo:
-
-1. `VERIFY_WINDOWS.bat` double-click karo.
-2. Output me backend tests aur frontend build pass hone chahiye.
-3. `START.bat` double-click karo.
-4. Browser me `http://127.0.0.1:5173` open ho jana chahiye.
-5. Admin login karke ek new teacher add karo.
-6. New teacher se Faculty login karke assigned class list check karo.
-7. Teacher dashboard me class select karke camera permission allow karo.
-8. Enrolled student ka face camera ke saamne lao aur attendance log verify karo.
-9. Student login karke attendance summary page dikhao.
-
-Interview me short explanation:
-
-- Backend FastAPI hai.
-- SQLite local database use ho raha hai.
-- React + Vite frontend hai.
-- Admin teacher/student registration kar sakta hai.
-- Teacher assigned class ke liye live face attendance mark karta hai.
-- Student apni attendance summary dekh sakta hai.
-
-## Command Line Enrollment
-
-Portal ke alawa CLI se bhi student enroll kar sakte ho.
-
-1. Student photos is folder me rakho:
-
-```text
-data\students\[STUDENT_ID]\photo1.jpg
-data\students\[STUDENT_ID]\photo2.jpg
-data\students\[STUDENT_ID]\photo3.jpg
-```
-
-Example:
-
-```text
-data\students\22BCS010\photo1.jpg
-data\students\22BCS010\photo2.jpg
-```
-
-Recommended: 5-15 clear photos, har photo me ek hi saaf face.
-
-2. `ENROLL_STUDENT.bat` double-click karo.
-3. Student ID, name, branch enter karo.
-4. Script student profile aur face encodings create karegi.
-
-## CLI Attendance Mode
-
-Web portal ke bina command-line webcam attendance bhi available hai.
-
-1. Pehle students enroll hone chahiye.
-2. `CLI_ATTENDANCE.bat` double-click karo.
-3. Subject name enter karo, example: `AIML_LAB`.
-4. Camera window open hogi.
-5. Face recognize hone par attendance mark hogi.
-6. Quit karne ke liye camera window me `q` press karo.
-
-## Useful Batch Files
-
-| File | Use |
+| File | Description |
 | --- | --- |
-| `START.bat` | Full setup + backend + frontend start |
-| `SETUP_WINDOWS.bat` | Setup helper, internally `START.bat` call karta hai |
-| `RUN_BACKEND.bat` | Sirf backend API start karta hai |
-| `RUN_FRONTEND.bat` | Sirf frontend dev server start karta hai |
-| `VERIFY_WINDOWS.bat` | Python checks, backend tests, frontend build verify karta hai |
-| `ENROLL_STUDENT.bat` | Photos folder se student enroll karta hai |
-| `CLI_ATTENDANCE.bat` | Command-line webcam attendance start karta hai |
-| `REBUILD_ENCODINGS.bat` | Existing student photos se encodings dobara banata hai |
+| `START.bat` | Full setup and application launch. |
+| `VERIFY_WINDOWS.bat` | Runs pre-flight checks, backend tests, and a frontend build. |
+| `RUN_BACKEND.bat` | Starts only the backend server. |
+| `RUN_FRONTEND.bat` | Starts only the frontend development server. |
+| `CLI_ATTENDANCE.bat` | A basic CLI-only attendance mode (requires enrolled students). |
 
-## Manual Run Commands
+## Testing
 
-Normally `START.bat` enough hai. Manual run karna ho to:
+To verify the installation and ensure both the backend and frontend are working correctly, run `VERIFY_WINDOWS.bat`.
 
-Backend:
-
-```bat
-.venv\Scripts\python.exe -m uvicorn app.api.main:app --reload --host 127.0.0.1 --port 8000
-```
-
-Frontend:
-
-```bat
-cd frontend
-npm run dev
-```
-
-Database initialize:
-
-```bat
-.venv\Scripts\python.exe scripts\init_db.py
-```
-
-Demo data seed:
-
-```bat
-.venv\Scripts\python.exe scripts\seed_portal_data.py --file data\seed\portal_seed.json
-```
-
-All face encodings rebuild:
-
-```bat
-.venv\Scripts\python.exe rebuild_encodings.py
-```
-
-## Verification
-
-Full verification ke liye `VERIFY_WINDOWS.bat` double-click karo.
-
-Manual commands:
-
-```bat
-.venv\Scripts\python.exe scripts\windows_preflight.py --mode all
-.venv\Scripts\python.exe -m pytest -q
-cd frontend
-npm run build
-```
-
-## Folder Structure
-
-```text
-app\                    Backend app
-app\api\                FastAPI routes
-app\services\           Attendance service logic
-frontend\               React + Vite frontend
-frontend\src\pages\     Login, teacher, admin, student pages
-frontend\stitch_exports Static HTML templates used inside portal iframes
-scripts\                Setup, seed, enroll, recognition helper scripts
-data\seed\              Demo portal data
-data\students\          Student face image folders
-tests\                  Backend/API tests
-attendance.db           Local SQLite database, created after setup
-encodings.pkl           Face encodings file, created after enrollment
-```
+This script will:
+1.  Run Python environment checks.
+2.  Execute backend API tests using `pytest`.
+3.  Attempt a production build of the frontend using `npm run build`.
 
 ## Troubleshooting
 
-### Python nahi mil raha
-
-Python 3.10/3.11 install karo aur PATH me add karo. Phir terminal/batch dobara open karo.
-
-### `dlib` ya `face-recognition` install fail
-
-Visual Studio Build Tools install karo aur **Desktop development with C++** select karo. Phir `START.bat` dobara run karo.
-
-### Camera open nahi ho raha
-
-- Browser permission me camera allow karo.
-- Dusri app camera use kar rahi ho to close karo.
-- Portal `http://127.0.0.1:5173` par hi open karo.
-
-### Student recognize nahi ho raha
-
-- Student pehle enroll hona chahiye.
-- Photos clear honi chahiye.
-- Har image me ek saaf face hona chahiye.
-- Different angles/light me 5-15 photos better result deti hain.
-- `REBUILD_ENCODINGS.bat` run karke encodings refresh karo.
-
-### Attendance mark nahi ho rahi
-
-- Teacher ne correct class/batch select ki hai ya nahi check karo.
-- Student ka batch profile selected class se match hona chahiye.
-- Camera page par live feed aa rahi hai ya nahi check karo.
-- Backend window me error logs check karo.
-
-## Features Summary
-
-- Role-based portal: Teacher, Student, Admin
-- Session-based attendance
-- Live webcam face recognition
-- Automatic attendance marking
-- Batch mismatch handling
-- Student biometric registration
-- File upload and live camera capture for registration
-- Student attendance dashboard
-- Subject-wise and total attendance percentages
-- SQLite local database
-- Windows one-click startup scripts
-- Backend API tests and frontend build verification
-
-## Tech Stack - Short
-
-Backend:
-
-- Python
-- FastAPI
-- Uvicorn
-- Starlette sessions via `itsdangerous`
-- `python-multipart` for image uploads
-- Pytest + HTTPX for tests
-
-AI / Face Recognition:
-
-- `face-recognition`
-- `dlib`
-- OpenCV (`opencv-python`)
-- NumPy
-- Pickle-based face encoding storage
-
-Frontend:
-
-- React 18
-- Vite
-- Tailwind CSS
-- shadcn-style UI components
-- Radix UI
-- Lucide React icons
-- Static Stitch HTML templates embedded through iframes
-
-Database:
-
-- SQLite
-- Local file: `attendance.db`
-
-Platform / Scripts:
-
-- Windows batch files (`.bat`)
-- Python virtual environment: `.venv`
-- npm for frontend packages
+*   **`dlib` or `face-recognition` install fails**: This is almost always due to missing C++ build tools. Follow step 3 in the Prerequisites section.
+*   **Python not found**: Make sure you installed Python 3.10 or 3.11 and that it was added to your system's PATH.
+*   **Camera not opening**:
+    *   Ensure you granted camera permissions to the browser for `http://127.0.0.1:5173`.
+    *   Check that no other application is using your webcam.
+*   **Student not recognized**:
+    *   Ensure the student is enrolled via the Admin portal or CLI script.
+    *   Use clear, well-lit photos for enrollment. 5-15 photos with varied angles are recommended for better accuracy.
+    *   Run `REBUILD_ENCODINGS.bat` to refresh the encodings file after adding new photos manually.
+*   **Attendance not marked**:
+    *   Verify the teacher has selected the correct class session.
+    *   Check if the student's registered batch matches the batch of the class session. The system will show a "batch mismatch" warning if they don't align.
