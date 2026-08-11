@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+itsdangerous
+python-multipart
+numpy
+opencv-python
+face-recognition
+cmake
+setuptools<81
+wheel
+pytest
+httpx

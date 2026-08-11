@@ -1,0 +1,62 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Inter, Arial, sans-serif; background: #eef3f8; color: #111827; }
+    button { cursor: pointer; border: 0; font: inherit; }
+    .app-shell { min-height: 100vh; display: flex; flex-direction: column; background: linear-gradient(135deg, #08111f 0%, #12313a 34%, #eef3f8 34.2%, #f8fafc 100%); }
+    .topbar { height: 76px; display: flex; align-items: center; justify-content: space-between; padding: 0 48px; background: rgba(255,255,255,.9); border-bottom: 1px solid rgba(15,23,42,.08); backdrop-filter: blur(18px); }
+    .brand { font-size: 20px; font-weight: 950; letter-spacing: .08em; color: #07111f; }
+    .signout { background: #07111f; color: #fff; padding: 11px 15px; border-radius: 8px; font-size: 12px; font-weight: 850; box-shadow: 0 12px 24px rgba(7,17,31,.18); }
+    .content { width: min(1180px, calc(100% - 32px)); margin: 34px auto; flex: 1; }
+    .page-title { margin: 0 0 8px; font-size: 34px; font-weight: 950; letter-spacing: -.03em; }
+    .card { background: rgba(255,255,255,.96); border: 1px solid rgba(226,232,240,.9); border-radius: 12px; box-shadow: 0 24px 70px rgba(7,17,31,.14); }
+    .muted { color: #6b7280; }
+    table { width: 100%; border-collapse: collapse; }
+    th { text-align: left; color: #6b7280; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+    th, td { padding: 18px 24px; border-bottom: 1px solid #eef2f7; }
+    section.bg-white { background: rgba(255,255,255,.96); border-radius: 12px; box-shadow: 0 24px 70px rgba(7,17,31,.12); }
+    .signout:hover { background: #0e7490; }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <div class="brand">FACEGRID</div>
+        <div class="muted" style="font-size: 12px;">Student Portal</div>
+      </div>
+      <button class="signout">Sign Out</button>
+    </header>
+    <main class="content">
+      <section class="card" style="padding: 24px; margin-bottom: 20px;">
+        <h1 class="page-title">Alex Johnson</h1>
+        <p class="muted">ENR-2024-0891</p>
+        <div style="margin-top: 18px;">
+          <span class="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Batch</span>
+          <p class="text-lg font-bold text-gray-900">CSE-F6</p>
+        </div>
+      </section>
+      <section class="bg-white rounded-xl border border-gray-200 shadow-[0_1px_3px_rgba(0,0,0,0.02)] overflow-hidden">
+        <table>
+          <thead>
+            <tr>
+              <th>Subject</th>
+              <th>Lecture</th>
+              <th>Tutorial</th>
+              <th>Practical</th>
+              <th>Overall</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            <tr><td colspan="5">Loading attendance...</td></tr>
+          </tbody>
+        </table>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

@@ -1,0 +1,66 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Inter, Arial, sans-serif; background: #eef3f8; color: #111827; }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; border: 0; }
+    input, select { width: 100%; border: 1px solid #d1d5db; border-radius: 8px; padding: 13px; background: #f8fafc; outline: none; transition: .18s ease; }
+    input:focus, select:focus { border-color: #0e7490; background: #fff; box-shadow: 0 0 0 4px rgba(14,116,144,.13); }
+    label { display: grid; gap: 8px; font-size: 12px; font-weight: 850; color: #475569; text-transform: uppercase; letter-spacing: .04em; }
+    .app-shell { min-height: 100vh; display: flex; flex-direction: column; background: linear-gradient(135deg, #08111f 0%, #172033 35%, #eef3f8 35.2%, #f8fafc 100%); }
+    .topbar { height: 76px; display: flex; align-items: center; justify-content: space-between; padding: 0 48px; background: rgba(255,255,255,.9); border-bottom: 1px solid rgba(15,23,42,.08); backdrop-filter: blur(18px); }
+    .brand { font-size: 20px; font-weight: 950; letter-spacing: .08em; color: #07111f; }
+    .signout { background: #07111f; color: #fff; padding: 11px 15px; border-radius: 8px; font-size: 12px; font-weight: 850; box-shadow: 0 12px 24px rgba(7,17,31,.18); }
+    .content { width: min(1180px, calc(100% - 32px)); margin: 34px auto; flex: 1; }
+    .page-title { margin: 0 0 24px; font-size: 34px; font-weight: 950; letter-spacing: -.03em; color: #fff; }
+    .card { background: rgba(255,255,255,.96); border: 1px solid rgba(226,232,240,.9); border-radius: 12px; box-shadow: 0 24px 70px rgba(7,17,31,.14); }
+    .muted { color: #6b7280; }
+    .cursor-pointer { cursor: pointer; }
+    .signout:hover { background: #0e7490; }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <div class="brand">FACEGRID</div>
+        <div class="muted" style="font-size: 12px;">Administrator</div>
+      </div>
+      <button class="signout">Sign Out</button>
+    </header>
+    <main class="content">
+      <h1 class="page-title">Register Biometrics</h1>
+      <div style="display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 24px;">
+        <section class="card" style="padding: 24px;">
+          <label>Student Name<input type="text" placeholder="Arshdeep Singh" /></label>
+          <div style="height: 16px;"></div>
+          <label>Enrollment Number<input type="text" placeholder="99xx enrollment number" /></label>
+          <div style="height: 16px;"></div>
+          <label>Batch
+            <select>
+              <option value="">Select batch</option>
+              <option value="CSE-F5">CSE-F5</option>
+              <option value="CSE-F6">CSE-F6</option>
+              <option value="CSE-F10">CSE-F10</option>
+              <option value="F5F6">F5F6</option>
+            </select>
+          </label>
+        </section>
+        <section class="card cursor-pointer" style="padding: 24px;">
+          <h3>Drag & Drop Image Files</h3>
+          <p class="muted">Upload clear face images for this student.</p>
+          <button class="signout" type="button">Browse Files</button>
+          <h4 style="margin-top: 24px;">Upload Queue (0/10)</h4>
+          <div style="margin-top: 24px;">
+            <button class="signout" type="button">Register Profile</button>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Local data and outputs
+attendance.db
+data/models/*.pkl
+data/students/*
+!data/students/.gitkeep
+reports/*.csv
+
+# Build artifacts
+dlib/build/
+dlib/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
