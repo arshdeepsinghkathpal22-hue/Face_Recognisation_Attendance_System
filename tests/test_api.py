@@ -65,6 +65,8 @@ def _enroll_student(
     semester_id: str = "fall-2024",
     subject_id: str = "ENV",
 ) -> None:
+    if get_student_with_profile(student_id=student_id, db_path=db_path) is None:
+        upsert_student(student_id=student_id, name="Test Student", db_path=db_path)
     upsert_student_subject(
         student_id=student_id,
         semester_id=semester_id,
@@ -497,7 +499,7 @@ def test_admin_lists_persisted_teachers_and_students(tmp_path, monkeypatch) -> N
     _seed_admin(db_path)
     upsert_semester("fall-2024", "Fall 2024", 1, 1, db_path=db_path)
     upsert_subject("ENV", "fall-2024", "Environment", 1, db_path=db_path)
-    _enroll_student(db_path, subject_id="ENV")
+    _enroll_student(db_path, student_id="S001", subject_id="ENV")
 
     async def fake_enroll(**kwargs):
         from app.db import upsert_student, upsert_student_profile
@@ -1027,7 +1029,7 @@ def test_teacher_frame_recognize_accepts_branch_session_for_section_student(tmp_
     upsert_student_profile(student_id="992401030315", branch="CSE", batch="CSE-F6", db_path=db_path)
     upsert_semester("spring-2025", "Spring 2025", 1, 1, db_path=db_path)
     upsert_subject("CN", "spring-2025", "Computer Networks", 1, db_path=db_path)
-    _enroll_student(db_path, semester_id="spring-2025", subject_id="CN")
+    _enroll_student(db_path, student_id="992401030315", semester_id="spring-2025", subject_id="CN")
     replace_teacher_assignments(
         teacher_id="admin",
         assignments=[

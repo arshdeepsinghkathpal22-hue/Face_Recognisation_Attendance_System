@@ -35,15 +35,16 @@ function renderMetric(metric) {
 }
 
 function renderOverallMetric(metricOrValue) {
-  const value = typeof metricOrValue === "object" && metricOrValue !== null ? metricOrValue.pct : metricOrValue;
-  const held = typeof metricOrValue === "object" && metricOrValue !== null ? Number(metricOrValue.held || 0) : null;
-  const attended = typeof metricOrValue === "object" && metricOrValue !== null ? Number(metricOrValue.attended || 0) : null;
-  if (value === null || value === undefined) {
+  const isObj = typeof metricOrValue === "object" && metricOrValue !== null;
+  const value = isObj ? metricOrValue.pct : metricOrValue;
+  const held = isObj ? Number(metricOrValue.held || 0) : null;
+  const attended = isObj ? Number(metricOrValue.attended || 0) : null;
+  if (value === null || value === undefined || (held !== null && held <= 0)) {
     return '<span class="text-gray-400">—</span>';
   }
   const label = held !== null ? `${attended}/${held} (${value}%)` : `${value}%`;
   if (value < 75) {
-    return `<span class="text-red-600">${label}</span>`;
+    return `<span class="text-red-600 font-bold">${label}</span>`;
   }
   return label;
 }

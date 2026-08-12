@@ -1196,16 +1196,23 @@ def fetch_subject_attendance_counts(
         cursor = connection.cursor()
         cursor.execute(
             """
-            WITH eligible_session_groups AS (
+            WITH registered_subjects AS (
                 SELECT
+                    subjects.id AS subject_id,
+                    subjects.name AS subject_name,
+                    subjects.sort_order
+                FROM subjects
+                JOIN student_subjects
+                    ON student_subjects.subject_id = subjects.id
+                    AND student_subjects.semester_id = subjects.semester_id
+                WHERE student_subjects.student_id = ?
+                    AND subjects.semester_id = ?
+            ),
+            eligible_sessions AS (
+                SELECT
+                    class_sessions.id AS session_id,
                     class_sessions.subject_id,
-                    class_sessions.semester_id,
                     class_sessions.class_type,
-                    class_sessions.session_date,
-                    UPPER(REPLACE(COALESCE(class_sessions.batch, ''), ' ', '')) AS normalized_batch,
-                    COALESCE(class_sessions.start_time, '') AS normalized_start_time,
-                    COALESCE(class_sessions.end_time, '') AS normalized_end_time,
-                    class_sessions.teacher_id,
                     MAX(
                         CASE
                             WHEN session_attendance.present = 1 THEN 1
@@ -1213,22 +1220,38 @@ def fetch_subject_attendance_counts(
                         END
                     ) AS student_present
                 FROM class_sessions
+                JOIN registered_subjects
+                    ON registered_subjects.subject_id = class_sessions.subject_id
                 LEFT JOIN session_attendance
                     ON session_attendance.session_id = class_sessions.id
                     AND session_attendance.student_id = ?
                 WHERE class_sessions.semester_id = ?
-                    AND EXISTS (
-                        SELECT 1
-                        FROM teacher_assignments
-                        WHERE teacher_assignments.semester_id = class_sessions.semester_id
-                            AND teacher_assignments.subject_id = class_sessions.subject_id
-                            AND teacher_assignments.batch = class_sessions.batch
-                            AND teacher_assignments.class_type = class_sessions.class_type
-                            AND (
-                                class_sessions.teacher_id IS NULL
-                                OR class_sessions.teacher_id = ''
-                                OR teacher_assignments.teacher_id = class_sessions.teacher_id
-                            )
+                    AND (
+                        NOT EXISTS (
+                            SELECT 1
+                            FROM teacher_assignments ta
+                            WHERE ta.semester_id = class_sessions.semester_id
+                                AND ta.subject_id = class_sessions.subject_id
+                        )
+                        OR EXISTS (
+                            SELECT 1
+                            FROM teacher_assignments ta
+                            WHERE ta.semester_id = class_sessions.semester_id
+                                AND ta.subject_id = class_sessions.subject_id
+                                AND (
+                                    ta.batch = class_sessions.batch
+                                    OR class_sessions.batch IS NULL
+                                    OR class_sessions.batch = ''
+                                    OR UPPER(REPLACE(ta.batch, ' ', '')) = UPPER(REPLACE(class_sessions.batch, ' ', ''))
+                                    OR UPPER(REPLACE(ta.batch, ' ', '')) = ?
+                                    OR UPPER(REPLACE(ta.batch, ' ', '')) = ?
+                                )
+                                AND (
+                                    class_sessions.teacher_id IS NULL
+                                    OR class_sessions.teacher_id = ''
+                                    OR ta.teacher_id = class_sessions.teacher_id
+                                )
+                        )
                     )
                     AND (
                         ? = ''
@@ -1244,28 +1267,21 @@ def fetch_subject_attendance_counts(
                         )
                     )
                 GROUP BY
+                    class_sessions.id,
                     class_sessions.subject_id,
-                    class_sessions.semester_id,
-                    class_sessions.class_type,
-                    class_sessions.session_date,
-                    normalized_batch,
-                    normalized_start_time,
-                    normalized_end_time,
-                    class_sessions.teacher_id
+                    class_sessions.class_type
             )
             SELECT
-                subjects.id AS subject_id,
-                subjects.name AS subject_name,
-                subjects.sort_order AS subject_sort_order,
-                COALESCE(SUM(CASE WHEN eligible_session_groups.class_type = 'L' THEN 1 ELSE 0 END), 0) AS held_l,
-                COALESCE(SUM(CASE WHEN eligible_session_groups.class_type = 'T' THEN 1 ELSE 0 END), 0) AS held_t,
-                COALESCE(SUM(CASE WHEN eligible_session_groups.class_type = 'P' THEN 1 ELSE 0 END), 0) AS held_p,
+                rs.subject_id,
+                rs.subject_name,
+                rs.sort_order AS subject_sort_order,
+                COALESCE(SUM(CASE WHEN es.class_type = 'L' THEN 1 ELSE 0 END), 0) AS held_l,
+                COALESCE(SUM(CASE WHEN es.class_type = 'T' THEN 1 ELSE 0 END), 0) AS held_t,
+                COALESCE(SUM(CASE WHEN es.class_type = 'P' THEN 1 ELSE 0 END), 0) AS held_p,
                 COALESCE(
                     SUM(
                         CASE
-                            WHEN eligible_session_groups.class_type = 'L'
-                                AND eligible_session_groups.student_present = 1
-                            THEN 1
+                            WHEN es.class_type = 'L' AND es.student_present = 1 THEN 1
                             ELSE 0
                         END
                     ),
@@ -1274,9 +1290,7 @@ def fetch_subject_attendance_counts(
                 COALESCE(
                     SUM(
                         CASE
-                            WHEN eligible_session_groups.class_type = 'T'
-                                AND eligible_session_groups.student_present = 1
-                            THEN 1
+                            WHEN es.class_type = 'T' AND es.student_present = 1 THEN 1
                             ELSE 0
                         END
                     ),
@@ -1285,29 +1299,25 @@ def fetch_subject_attendance_counts(
                 COALESCE(
                     SUM(
                         CASE
-                            WHEN eligible_session_groups.class_type = 'P'
-                                AND eligible_session_groups.student_present = 1
-                            THEN 1
+                            WHEN es.class_type = 'P' AND es.student_present = 1 THEN 1
                             ELSE 0
                         END
                     ),
                     0
                 ) AS attended_p
-            FROM subjects
-            JOIN student_subjects
-                ON student_subjects.subject_id = subjects.id
-                AND student_subjects.semester_id = subjects.semester_id
-                AND student_subjects.student_id = ?
-            LEFT JOIN eligible_session_groups
-                ON eligible_session_groups.subject_id = subjects.id
-                AND eligible_session_groups.semester_id = subjects.semester_id
-            WHERE subjects.semester_id = ?
-            GROUP BY subjects.id, subjects.name, subjects.sort_order
-            ORDER BY subjects.sort_order ASC, subjects.name ASC
+            FROM registered_subjects rs
+            LEFT JOIN eligible_sessions es
+                ON es.subject_id = rs.subject_id
+            GROUP BY rs.subject_id, rs.subject_name, rs.sort_order
+            ORDER BY rs.sort_order ASC, rs.subject_name ASC
             """,
             (
                 student_id,
                 semester_id,
+                student_id,
+                semester_id,
+                student_batch,
+                student_branch,
                 student_batch,
                 student_batch,
                 student_branch,
@@ -1315,9 +1325,8 @@ def fetch_subject_attendance_counts(
                 student_batch,
                 student_section,
                 student_section,
-                student_id,
-                semester_id,
             ),
         )
         rows = cursor.fetchall()
     return [dict(row) for row in rows]
+
