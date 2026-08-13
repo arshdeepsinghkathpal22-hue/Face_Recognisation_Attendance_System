@@ -174,6 +174,7 @@ def initialize_db(db_path: str | Path = DB_PATH) -> None:
         )
 
         # Backward-compatible migrations for existing local DBs.
+        _ensure_column(cursor, "students", "password", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(cursor, "teacher_users", "email", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(cursor, "student_profile", "batch", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(cursor, "class_sessions", "batch", "TEXT NOT NULL DEFAULT ''")
@@ -866,14 +867,56 @@ def create_class_session(
     batch: str,
     start_time: str,
     end_time: str,
-    teacher_id: str,
+    teacher_id: str | None = None,
     db_path: str | Path = DB_PATH,
 ) -> int:
-    normalized_type = class_type.upper()
+    normalized_type = "P" if ("LAB" in subject_id.upper() or "PRAC" in subject_id.upper()) else class_type.upper()
     if normalized_type not in {"L", "T", "P"}:
         raise ValueError(f"Invalid class_type: {class_type}")
+
+    cooldown_minutes = 120.0 if normalized_type == "P" else 60.0
+
     with get_connection(db_path) as connection:
         cursor = connection.cursor()
+        valid_teacher_id = None
+        if teacher_id:
+            cursor.execute("SELECT 1 FROM teacher_users WHERE teacher_id = ?", (teacher_id,))
+            if cursor.fetchone() is not None:
+                valid_teacher_id = teacher_id
+
+        cursor.execute(
+            """
+            SELECT id, start_time, is_active FROM class_sessions
+            WHERE (teacher_id IS ? OR teacher_id = ?)
+                AND subject_id = ?
+                AND semester_id = ?
+                AND batch = ?
+                AND class_type = ?
+                AND session_date = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (valid_teacher_id, valid_teacher_id or "", subject_id, semester_id, batch, normalized_type, session_date),
+        )
+        existing = cursor.fetchone()
+        if existing:
+            existing_time = existing["start_time"]
+            existing_id = int(existing["id"])
+
+            diff_minutes = 0.0
+            if existing_time and start_time:
+                try:
+                    t1 = datetime.strptime(existing_time, TIME_FMT)
+                    t2 = datetime.strptime(start_time, TIME_FMT)
+                    diff_minutes = abs((t2 - t1).total_seconds()) / 60.0
+                except Exception:
+                    diff_minutes = 0.0
+
+            if diff_minutes < cooldown_minutes:
+                cursor.execute("UPDATE class_sessions SET is_active = 1 WHERE id = ?", (existing_id,))
+                connection.commit()
+                return existing_id
+
         cursor.execute(
             """
             INSERT INTO class_sessions(
@@ -890,7 +933,7 @@ def create_class_session(
                 batch,
                 start_time,
                 end_time,
-                teacher_id,
+                valid_teacher_id,
             ),
         )
         connection.commit()
@@ -1329,4 +1372,313 @@ def fetch_subject_attendance_counts(
         )
         rows = cursor.fetchall()
     return [dict(row) for row in rows]
+
+
+def update_student_password(student_id: str, password: str, db_path: str | Path = DB_PATH) -> None:
+    stored_password = hash_password(password)
+    with get_connection(db_path) as connection:
+        cursor = connection.cursor()
+        cursor.execute(
+            "UPDATE students SET password = ? WHERE student_id = ?",
+            (stored_password, student_id),
+        )
+        connection.commit()
+
+
+def get_student_by_login(login: str, db_path: str | Path = DB_PATH) -> dict | None:
+    normalized_login = login.strip()
+    with get_connection(db_path) as connection:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            SELECT
+                students.student_id,
+                students.name,
+                COALESCE(NULLIF(students.password, ''), students.student_id) AS password,
+                COALESCE(student_profile.branch, '') AS branch,
+                COALESCE(NULLIF(student_profile.batch, ''), student_profile.branch, '') AS batch
+            FROM students
+            LEFT JOIN student_profile ON student_profile.student_id = students.student_id
+            WHERE students.student_id = ?
+            """,
+            (normalized_login,),
+        )
+        row = cursor.fetchone()
+    return dict(row) if row else None
+
+
+def delete_student(student_id: str, db_path: str | Path = DB_PATH) -> None:
+    with get_connection(db_path) as connection:
+        cursor = connection.cursor()
+        cursor.execute("DELETE FROM students WHERE student_id = ?", (student_id,))
+        if cursor.rowcount == 0:
+            raise KeyError(f"Student not found: {student_id}")
+        connection.commit()
+
+
+def update_student(
+    student_id: str,
+    name: str,
+    branch: str,
+    batch: str,
+    db_path: str | Path = DB_PATH,
+) -> None:
+    with get_connection(db_path) as connection:
+        cursor = connection.cursor()
+        cursor.execute(
+            "UPDATE students SET name = ? WHERE student_id = ?",
+            (name, student_id),
+        )
+        if cursor.rowcount == 0:
+            raise KeyError(f"Student not found: {student_id}")
+        cursor.execute(
+            """
+            INSERT INTO student_profile(student_id, branch, batch)
+            VALUES (?, ?, ?)
+            ON CONFLICT(student_id) DO UPDATE SET
+                branch = excluded.branch,
+                batch = excluded.batch
+            """,
+            (student_id, branch, batch),
+        )
+        connection.commit()
+
+
+def delete_teacher_user(teacher_id: str, db_path: str | Path = DB_PATH) -> None:
+    with get_connection(db_path) as connection:
+        cursor = connection.cursor()
+        cursor.execute("DELETE FROM teacher_users WHERE teacher_id = ?", (teacher_id,))
+        if cursor.rowcount == 0:
+            raise KeyError(f"Teacher not found: {teacher_id}")
+        connection.commit()
+
+
+def update_subject(
+    subject_id: str,
+    semester_id: str,
+    name: str,
+    sort_order: int,
+    db_path: str | Path = DB_PATH,
+) -> None:
+    with get_connection(db_path) as connection:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            UPDATE subjects
+            SET name = ?, sort_order = ?
+            WHERE id = ? AND semester_id = ?
+            """,
+            (name, sort_order, subject_id, semester_id),
+        )
+        if cursor.rowcount == 0:
+            raise KeyError(f"Subject not found: {subject_id}")
+        connection.commit()
+
+
+def delete_subject(subject_id: str, semester_id: str, db_path: str | Path = DB_PATH) -> None:
+    with get_connection(db_path) as connection:
+        cursor = connection.cursor()
+        cursor.execute(
+            "DELETE FROM subjects WHERE id = ? AND semester_id = ?",
+            (subject_id, semester_id),
+        )
+        if cursor.rowcount == 0:
+            raise KeyError(f"Subject not found: {subject_id}")
+        connection.commit()
+
+
+def get_admin_dashboard_stats(semester_id: str = "fall-2024", db_path: str | Path = DB_PATH) -> dict:
+    with get_connection(db_path) as connection:
+        cursor = connection.cursor()
+        cursor.execute("SELECT COUNT(*) AS count FROM students")
+        total_students = cursor.fetchone()["count"]
+
+        cursor.execute("SELECT COUNT(*) AS count FROM teacher_users")
+        total_teachers = cursor.fetchone()["count"]
+
+        cursor.execute("SELECT COUNT(*) AS count FROM subjects WHERE semester_id = ?", (semester_id,))
+        total_subjects = cursor.fetchone()["count"]
+
+        cursor.execute("SELECT COUNT(*) AS count FROM class_sessions WHERE semester_id = ?", (semester_id,))
+        total_sessions = cursor.fetchone()["count"]
+
+        cursor.execute(
+            """
+            SELECT
+                COUNT(session_attendance.id) AS marked_records,
+                COALESCE(SUM(session_attendance.present), 0) AS present_records
+            FROM session_attendance
+            JOIN class_sessions ON class_sessions.id = session_attendance.session_id
+            WHERE class_sessions.semester_id = ?
+            """,
+            (semester_id,),
+        )
+        row = cursor.fetchone()
+        present_count = row["present_records"] or 0
+        marked_count = row["marked_records"] or 0
+        overall_pct = round((present_count / marked_count) * 100) if marked_count > 0 else 0
+
+        # Recent attendance records
+        cursor.execute(
+            """
+            SELECT
+                sa.student_id,
+                st.name AS student_name,
+                cs.subject_id,
+                sub.name AS subject_name,
+                cs.session_date,
+                cs.class_type,
+                sa.present
+            FROM session_attendance sa
+            JOIN students st ON st.student_id = sa.student_id
+            JOIN class_sessions cs ON cs.id = sa.session_id
+            JOIN subjects sub ON sub.id = cs.subject_id AND sub.semester_id = cs.semester_id
+            WHERE cs.semester_id = ?
+            ORDER BY sa.id DESC
+            LIMIT 10
+            """,
+            (semester_id,),
+        )
+        recent_attendance = [dict(r) for r in cursor.fetchall()]
+
+    return {
+        "total_students": total_students,
+        "total_teachers": total_teachers,
+        "total_subjects": total_subjects,
+        "total_sessions": total_sessions,
+        "overall_pct": overall_pct,
+        "recent_attendance": recent_attendance,
+    }
+
+
+def list_teacher_session_history(teacher_id: str, db_path: str | Path = DB_PATH) -> list[dict]:
+    with get_connection(db_path) as connection:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            SELECT
+                cs.id AS session_id,
+                cs.subject_id,
+                sub.name AS subject_name,
+                cs.semester_id,
+                cs.class_type,
+                cs.session_date,
+                cs.batch,
+                cs.start_time,
+                cs.end_time,
+                cs.is_active,
+                COUNT(sa.id) AS marked_students,
+                COALESCE(SUM(sa.present), 0) AS present_students
+            FROM class_sessions cs
+            JOIN subjects sub ON sub.id = cs.subject_id AND sub.semester_id = cs.semester_id
+            LEFT JOIN session_attendance sa ON sa.session_id = cs.id
+            WHERE cs.teacher_id = ?
+            GROUP BY cs.id
+            ORDER BY cs.session_date DESC, cs.id DESC
+            """,
+            (teacher_id,),
+        )
+        rows = cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_session_student_roster(session_id: int, db_path: str | Path = DB_PATH) -> list[dict]:
+    with get_connection(db_path) as connection:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            SELECT subject_id, semester_id, batch, class_type FROM class_sessions WHERE id = ?
+            """,
+            (session_id,),
+        )
+        session = cursor.fetchone()
+        if not session:
+            return []
+
+        cursor.execute(
+            """
+            SELECT
+                st.student_id,
+                st.name,
+                COALESCE(sp.branch, '') AS branch,
+                COALESCE(NULLIF(sp.batch, ''), sp.branch, '') AS batch,
+                CASE WHEN sa.present = 1 THEN 1 ELSE 0 END AS present
+            FROM student_subjects ss
+            JOIN students st ON st.student_id = ss.student_id
+            LEFT JOIN student_profile sp ON sp.student_id = st.student_id
+            LEFT JOIN session_attendance sa ON sa.session_id = ? AND sa.student_id = st.student_id
+            WHERE ss.semester_id = ? AND ss.subject_id = ?
+            ORDER BY st.name ASC
+            """,
+            (session_id, session["semester_id"], session["subject_id"]),
+        )
+        rows = cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_student_attendance_history(student_id: str, semester_id: str, db_path: str | Path = DB_PATH) -> list[dict]:
+    with get_connection(db_path) as connection:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            SELECT
+                cs.id AS session_id,
+                cs.session_date,
+                cs.start_time,
+                cs.end_time,
+                cs.class_type,
+                cs.subject_id,
+                sub.name AS subject_name,
+                COALESCE(sa.present, 0) AS present,
+                (SELECT COUNT(*) FROM session_attendance sa_cnt WHERE sa_cnt.session_id = cs.id) AS total_attendance_marked
+            FROM class_sessions cs
+            JOIN subjects sub ON sub.id = cs.subject_id AND sub.semester_id = cs.semester_id
+            JOIN student_subjects ss ON ss.subject_id = cs.subject_id AND ss.semester_id = cs.semester_id AND ss.student_id = ?
+            LEFT JOIN session_attendance sa ON sa.session_id = cs.id AND sa.student_id = ?
+            WHERE cs.semester_id = ?
+              AND cs.session_date >= '2026-01-01'
+            ORDER BY cs.session_date DESC, cs.id DESC
+            """,
+            (student_id, student_id, semester_id),
+        )
+        rows = cursor.fetchall()
+
+    results = []
+    seen_sessions = set()
+    for r in rows:
+        sid = r["session_id"]
+        if sid in seen_sessions:
+            continue
+
+        # Skip empty unconducted duplicate sessions where NO attendance was ever recorded for anyone and session is closed
+        if r["present"] == 0 and r["total_attendance_marked"] == 0:
+            # Check if another conducted session exists on the exact same date/time/subject
+            cursor_check = get_connection(db_path).cursor()
+            cursor_check.execute(
+                """
+                SELECT 1 FROM class_sessions cs2
+                JOIN session_attendance sa2 ON sa2.session_id = cs2.id
+                WHERE cs2.subject_id = ? AND cs2.semester_id = ? AND cs2.session_date = ? AND cs2.start_time = ? AND cs2.id <> ?
+                """,
+                (r["subject_id"], semester_id, r["session_date"], r["start_time"], sid),
+            )
+            if cursor_check.fetchone() is not None:
+                continue
+
+        seen_sessions.add(sid)
+        results.append(
+            {
+                "session_id": r["session_id"],
+                "session_date": r["session_date"],
+                "start_time": r["start_time"],
+                "end_time": r["end_time"],
+                "class_type": r["class_type"],
+                "subject_id": r["subject_id"],
+                "subject_name": r["subject_name"],
+                "present": r["present"],
+            }
+        )
+    return results
+
+
 

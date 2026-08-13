@@ -261,3 +261,94 @@ export async function getAttendanceSummary(semesterId) {
   });
   return parseResponse(response);
 }
+
+export async function getAdminDashboardStats(semesterId = "fall-2024") {
+  const params = new URLSearchParams({ semester_id: semesterId });
+  const response = await fetch(`/api/admin/dashboard-stats?${params.toString()}`, {
+    method: "GET",
+    credentials: "include"
+  });
+  return parseResponse(response);
+}
+
+export async function createAdminSubject(payload) {
+  const response = await fetch("/api/admin/subjects", {
+    method: "POST",
+    credentials: "include",
+    headers: BASE_HEADERS,
+    body: JSON.stringify(payload)
+  });
+  return parseResponse(response);
+}
+
+export async function updateAdminSubject(subjectId, payload, semesterId = "fall-2024") {
+  const params = new URLSearchParams({ semester_id: semesterId });
+  const response = await fetch(`/api/admin/subjects/${subjectId}?${params.toString()}`, {
+    method: "PUT",
+    credentials: "include",
+    headers: BASE_HEADERS,
+    body: JSON.stringify(payload)
+  });
+  return parseResponse(response);
+}
+
+export async function deleteAdminSubject(subjectId, semesterId = "fall-2024") {
+  const params = new URLSearchParams({ semester_id: semesterId });
+  const response = await fetch(`/api/admin/subjects/${subjectId}?${params.toString()}`, {
+    method: "DELETE",
+    credentials: "include"
+  });
+  return parseResponse(response);
+}
+
+export async function updateAdminStudent(studentId, payload) {
+  const response = await fetch(`/api/admin/students/${studentId}`, {
+    method: "PUT",
+    credentials: "include",
+    headers: BASE_HEADERS,
+    body: JSON.stringify(payload)
+  });
+  return parseResponse(response);
+}
+
+export async function deleteAdminStudent(studentId) {
+  const response = await fetch(`/api/admin/students/${studentId}`, {
+    method: "DELETE",
+    credentials: "include"
+  });
+  return parseResponse(response);
+}
+
+export async function deleteAdminTeacher(teacherId) {
+  const response = await fetch(`/api/admin/teachers/${teacherId}`, {
+    method: "DELETE",
+    credentials: "include"
+  });
+  return parseResponse(response);
+}
+
+export async function getTeacherSessionHistory() {
+  const response = await fetch("/api/teacher/sessions/history", {
+    method: "GET",
+    credentials: "include"
+  });
+  return parseResponse(response);
+}
+
+export async function getTeacherSessionRoster(sessionId) {
+  const response = await fetch(`/api/teacher/sessions/${sessionId}/roster`, {
+    method: "GET",
+    credentials: "include"
+  });
+  return parseResponse(response);
+}
+
+export async function getStudentAttendanceHistory(semesterId = "fall-2024") {
+  const params = new URLSearchParams({ semester_id: semesterId });
+  const response = await fetch(`/api/attendance/history?${params.toString()}`, {
+    method: "GET",
+    credentials: "include"
+  });
+  return parseResponse(response);
+}
+

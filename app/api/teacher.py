@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 import face_recognition
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import Response
 
 from app.api.schemas import (
     BatchesResponse,
@@ -15,6 +16,7 @@ from app.api.schemas import (
     FrameDetectionResponse,
     FrameProcessResponse,
     SessionAttendanceResponse,
+    SessionRosterItemResponse,
     StartClassSessionRequest,
     StudentRegisterResponse,
     StudentResponse,
@@ -25,11 +27,13 @@ from app.api.schemas import (
     TeacherLoginResponse,
     TeacherMeResponse,
     TeacherResponse,
+    TeacherSessionHistoryItemResponse,
 )
 from app.config import DATE_FMT, ENCODINGS_PATH, STUDENTS_DIR
 from app.db import (
     create_class_session,
     get_class_session,
+    get_session_student_roster,
     get_student_with_profile,
     get_teacher_user,
     get_teacher_user_by_login,
@@ -41,6 +45,7 @@ from app.db import (
     list_present_students_for_session,
     list_subjects_for_semester,
     list_teacher_assignments,
+    list_teacher_session_history,
     mark_session_attendance,
     set_class_session_active,
     update_teacher_password,
@@ -53,6 +58,7 @@ router = APIRouter(prefix="/api/teacher", tags=["teacher"])
 logger = logging.getLogger(__name__)
 
 _KNOWN_FACES_CACHE: dict = {"file_token": None, "data": None}
+_SESSION_FILTERED_CACHE: dict = {}
 _RECOGNITION_STREAKS: dict[tuple[str, int, str], int] = {}
 REQUIRED_CONFIRMATION_FRAMES = 2
 
@@ -74,7 +80,9 @@ def _get_authenticated_teacher(request: Request) -> TeacherResponse:
     )
 
 
-def _normalize_class_type(class_type: str) -> str:
+def _normalize_class_type(class_type: str, subject_id: str = "") -> str:
+    if "LAB" in subject_id.upper() or "PRAC" in subject_id.upper():
+        return "P"
     normalized = class_type.upper().strip()
     if normalized not in {"L", "T", "P"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="class_type must be L, T, or P")
@@ -136,9 +144,27 @@ def _get_known_faces():
     return _KNOWN_FACES_CACHE["data"]
 
 
+def _get_session_known_faces(session_id: int, session_batch: str, db_path: str):
+    known_faces = _get_known_faces()
+    file_token = _KNOWN_FACES_CACHE.get("file_token")
+    cache_key = (session_id, session_batch, file_token, db_path)
+
+    if cache_key in _SESSION_FILTERED_CACHE:
+        return _SESSION_FILTERED_CACHE[cache_key]
+
+    filtered, load_debug = _filter_known_faces_for_session(
+        known_faces=known_faces,
+        session_batch=session_batch,
+        db_path=db_path,
+    )
+    _SESSION_FILTERED_CACHE[cache_key] = (filtered, load_debug)
+    return filtered, load_debug
+
+
 def _invalidate_known_faces_cache() -> None:
     _KNOWN_FACES_CACHE["file_token"] = None
     _KNOWN_FACES_CACHE["data"] = None
+    _SESSION_FILTERED_CACHE.clear()
 
 
 def _get_verified_teacher_session(
@@ -394,7 +420,7 @@ def start_teacher_session(
     teacher: TeacherResponse = Depends(_get_authenticated_teacher),
 ) -> ClassSessionResponse:
     db_path = request.app.state.db_path
-    class_type = _normalize_class_type(payload.class_type)
+    class_type = _normalize_class_type(payload.class_type, payload.subject_id)
 
     subjects = list_subjects_for_semester(payload.semester_id, db_path=db_path)
     if not any(subject["id"] == payload.subject_id for subject in subjects):
@@ -505,9 +531,8 @@ async def process_teacher_frame(
         )
 
     try:
-        known_faces = _get_known_faces()
-        session_known_faces, load_debug = _filter_known_faces_for_session(
-            known_faces=known_faces,
+        session_known_faces, load_debug = _get_session_known_faces(
+            session_id=session_id,
             session_batch=session["batch"],
             db_path=db_path,
         )
@@ -532,150 +557,356 @@ async def process_teacher_frame(
             },
         ) from exc
 
-    marked_by_student: dict[str, FrameDetectionResponse] = {}
-    seen_student_ids: set[str] = set()
-    decision_debug: list[dict] = []
-    for result in recognition_results:
-        result_debug = {
-            "detected": True,
-            "best_matched_student_id": result.get("best_student_id") or result.get("student_id"),
-            "best_euclidean_distance": float(result.get("distance", 1.0)),
-            "recognition_threshold": tolerance,
-            "active_session_batch": session["batch"],
-            "reason": result.get("reason", "unknown"),
+    detected_face_count = len(recognition_results)
+
+    # Scenario 1: No face detected in frame
+    if detected_face_count == 0:
+        stale_keys = [
+            key for key in _RECOGNITION_STREAKS
+            if key[0] == db_path and key[1] == session_id
+        ]
+        for key in stale_keys:
+            _RECOGNITION_STREAKS.pop(key, None)
+
+        detection_debug = {
+            "detected_face_count": 0,
+            "best_matched_student_id": None,
+            "best_name": None,
+            "best_euclidean_distance": 1.0,
+            "configured_threshold": tolerance,
+            "final_recognition_status": "no_face",
+            "reason": "no_face_detected",
         }
-        if not result.get("matched"):
-            result_debug["reason"] = result.get("reason", "distance_above_threshold")
-            decision_debug.append(result_debug)
-            continue
-
-        student_id = result["student_id"]
-        seen_student_ids.add(student_id)
-        student = get_student_with_profile(student_id=student_id, db_path=db_path)
-        name = student["name"] if student else result["name"]
-        result_debug["student_db_batch"] = student["batch"] if student else ""
-        result_debug["student_name"] = name
-
-        if not _is_student_in_selected_batch(
-            student_id=student_id,
-            student_batch=student["batch"] if student else "",
-            session_batch=session["batch"],
-            db_path=db_path,
-        ):
-            result_debug["reason"] = "batch_mismatch"
-            decision_debug.append(result_debug)
-            logger.info(
-                "Recognition rejected: session_id=%s student_id=%s distance=%.4f threshold=%.4f student_batch=%s session_batch=%s reason=batch_mismatch",
-                session_id,
-                student_id,
-                float(result["distance"]),
-                tolerance,
-                student["batch"] if student else "",
-                session["batch"],
-            )
-            detection = FrameDetectionResponse(
-                student_id=student_id,
-                name=name,
-                distance=float(result["distance"]),
-                status="batch_mismatch",
-                warning="Batch mismatch",
-                debug=result_debug,
-            )
-            previous = marked_by_student.get(student_id)
-            if previous is None or detection.distance < previous.distance:
-                marked_by_student[student_id] = detection
-            continue
-
-        streak_key = (db_path, session_id, student_id)
-        streak_count = _RECOGNITION_STREAKS.get(streak_key, 0) + 1
-        _RECOGNITION_STREAKS[streak_key] = streak_count
-        result_debug["confirmation_streak"] = streak_count
-        if streak_count < REQUIRED_CONFIRMATION_FRAMES:
-            result_debug["reason"] = "confirming"
-            decision_debug.append(result_debug)
-            detection = FrameDetectionResponse(
-                student_id=student_id,
-                name=name,
-                distance=float(result["distance"]),
-                status="confirming",
-                warning=f"Confirming {streak_count}/{REQUIRED_CONFIRMATION_FRAMES}",
-                debug=result_debug,
-            )
-            previous = marked_by_student.get(student_id)
-            if previous is None or detection.distance < previous.distance:
-                marked_by_student[student_id] = detection
-            continue
-
-        mark_result = mark_session_attendance(
-            session_id=session_id,
-            student_id=student_id,
-            db_path=db_path,
-        )
-        if not mark_result["ok"]:
-            result_debug["reason"] = mark_result["reason"]
-            result_debug["message"] = mark_result.get("message")
-            decision_debug.append(result_debug)
-            warning = mark_result.get("message") or "Attendance was not marked."
-            detection = FrameDetectionResponse(
-                student_id=student_id,
-                name=name,
-                distance=float(result["distance"]),
-                status=mark_result["reason"],
-                warning=warning,
-                debug=result_debug,
-            )
-            previous = marked_by_student.get(student_id)
-            if previous is None or detection.distance < previous.distance:
-                marked_by_student[student_id] = detection
-            continue
-
-        result_debug["reason"] = mark_result["reason"]
-        result_debug["attendance_inserted"] = mark_result["inserted"]
-        decision_debug.append(result_debug)
         logger.info(
-            "Attendance marked: session_id=%s student_id=%s name=%s distance=%.4f threshold=%.4f batch=%s inserted=%s",
+            "Recognition frame: session_id=%s detected_face_count=0 best_matched=None best_distance=1.0000 threshold=%.4f final_status=no_face",
             session_id,
-            student_id,
-            name,
-            float(result["distance"]),
             tolerance,
-            student["batch"] if student else "",
-            mark_result["inserted"],
         )
         detection = FrameDetectionResponse(
-            student_id=student_id,
-            name=name,
-            distance=float(result["distance"]),
-            status="registered",
-            debug=result_debug,
+            student_id="Unknown",
+            name="Unknown",
+            distance=1.0,
+            status="no_face",
+            warning="No face detected.",
+            debug=detection_debug,
+        )
+        present_students = _get_present_students_payload(session_id=session_id, db_path=db_path)
+        return FrameProcessResponse(
+            session_id=session_id,
+            marked_in_frame=[detection],
+            present_students=present_students,
+            debug={
+                "session_id": session_id,
+                "selected_batch": session["batch"],
+                "subject": session["subject_name"],
+                "detected_face_count": 0,
+                "recognition_threshold": tolerance,
+                **load_debug,
+                "decisions": [detection_debug],
+            },
         )
 
-        # Keep the best (lowest distance) detection for each student in this frame.
-        previous = marked_by_student.get(student_id)
-        if previous is None or detection.distance < previous.distance:
-            marked_by_student[student_id] = detection
+    # Scenario 2: Multiple faces detected in frame
+    if detected_face_count > 1:
+        stale_keys = [
+            key for key in _RECOGNITION_STREAKS
+            if key[0] == db_path and key[1] == session_id
+        ]
+        for key in stale_keys:
+            _RECOGNITION_STREAKS.pop(key, None)
 
+        min_distance = min((float(r.get("distance", 1.0)) for r in recognition_results), default=1.0)
+        detection_debug = {
+            "detected_face_count": detected_face_count,
+            "best_matched_student_id": None,
+            "best_name": None,
+            "best_euclidean_distance": min_distance,
+            "configured_threshold": tolerance,
+            "final_recognition_status": "multiple_faces",
+            "reason": "multiple_faces_detected",
+        }
+        logger.info(
+            "Recognition frame: session_id=%s detected_face_count=%s best_matched=None best_distance=%.4f threshold=%.4f final_status=multiple_faces",
+            session_id,
+            detected_face_count,
+            min_distance,
+            tolerance,
+        )
+        detection = FrameDetectionResponse(
+            student_id="Unknown",
+            name="Unknown",
+            distance=min_distance,
+            status="multiple_faces",
+            warning="Multiple faces detected. Please ensure only one registered student is visible.",
+            debug=detection_debug,
+        )
+        present_students = _get_present_students_payload(session_id=session_id, db_path=db_path)
+        return FrameProcessResponse(
+            session_id=session_id,
+            marked_in_frame=[detection],
+            present_students=present_students,
+            debug={
+                "session_id": session_id,
+                "selected_batch": session["batch"],
+                "subject": session["subject_name"],
+                "detected_face_count": detected_face_count,
+                "recognition_threshold": tolerance,
+                **load_debug,
+                "decisions": [detection_debug],
+            },
+        )
+
+    # Scenario 3: Single face detected
+    result = recognition_results[0]
+    best_student_id = result.get("best_student_id")
+    best_name = result.get("best_name")
+    best_distance = float(result.get("distance", 1.0))
+    is_match = bool(result.get("matched", False))
+
+    if not is_match:
+        # FACE MISMATCH / UNKNOWN FACE
+        stale_keys = [
+            key for key in _RECOGNITION_STREAKS
+            if key[0] == db_path and key[1] == session_id
+        ]
+        for key in stale_keys:
+            _RECOGNITION_STREAKS.pop(key, None)
+
+        detection_debug = {
+            "detected_face_count": 1,
+            "best_matched_student_id": best_student_id,
+            "best_name": best_name,
+            "best_euclidean_distance": best_distance,
+            "configured_threshold": tolerance,
+            "final_recognition_status": "face_mismatch",
+            "reason": result.get("reason", "distance_above_threshold"),
+        }
+        logger.info(
+            "Recognition frame: session_id=%s detected_face_count=1 best_matched=%s best_distance=%.4f threshold=%.4f final_status=face_mismatch",
+            session_id,
+            best_student_id,
+            best_distance,
+            tolerance,
+        )
+        detection = FrameDetectionResponse(
+            student_id="Unknown",
+            name="Unknown",
+            distance=best_distance,
+            status="face_mismatch",
+            warning="Face does not match any registered student.",
+            debug=detection_debug,
+        )
+        present_students = _get_present_students_payload(session_id=session_id, db_path=db_path)
+        return FrameProcessResponse(
+            session_id=session_id,
+            marked_in_frame=[detection],
+            present_students=present_students,
+            debug={
+                "session_id": session_id,
+                "selected_batch": session["batch"],
+                "subject": session["subject_name"],
+                "detected_face_count": 1,
+                "recognition_threshold": tolerance,
+                **load_debug,
+                "decisions": [detection_debug],
+            },
+        )
+
+    # Scenario 4: Valid enrolled student face (distance <= tolerance)
+    student_id = result["student_id"]
+    student = get_student_with_profile(student_id=student_id, db_path=db_path)
+    name = student["name"] if student else result["name"]
+
+    # Clear confirmation streaks for any OTHER student for this session
     stale_keys = [
-        key
-        for key in _RECOGNITION_STREAKS
-        if key[0] == db_path and key[1] == session_id and key[2] not in seen_student_ids
+        key for key in _RECOGNITION_STREAKS
+        if key[0] == db_path and key[1] == session_id and key[2] != student_id
     ]
     for key in stale_keys:
         _RECOGNITION_STREAKS.pop(key, None)
 
+    # Check batch mismatch
+    if not _is_student_in_selected_batch(
+        student_id=student_id,
+        student_batch=student["batch"] if student else "",
+        session_batch=session["batch"],
+        db_path=db_path,
+    ):
+        _RECOGNITION_STREAKS.pop((db_path, session_id, student_id), None)
+        detection_debug = {
+            "detected_face_count": 1,
+            "best_matched_student_id": student_id,
+            "best_name": name,
+            "best_euclidean_distance": best_distance,
+            "configured_threshold": tolerance,
+            "final_recognition_status": "batch_mismatch",
+            "reason": "batch_mismatch",
+            "student_db_batch": student["batch"] if student else "",
+            "active_session_batch": session["batch"],
+        }
+        logger.info(
+            "Recognition frame: session_id=%s detected_face_count=1 best_matched=%s best_distance=%.4f threshold=%.4f final_status=batch_mismatch",
+            session_id,
+            student_id,
+            best_distance,
+            tolerance,
+        )
+        detection = FrameDetectionResponse(
+            student_id=student_id,
+            name=name,
+            distance=best_distance,
+            status="batch_mismatch",
+            warning="Batch mismatch",
+            debug=detection_debug,
+        )
+        present_students = _get_present_students_payload(session_id=session_id, db_path=db_path)
+        return FrameProcessResponse(
+            session_id=session_id,
+            marked_in_frame=[detection],
+            present_students=present_students,
+            debug={
+                "session_id": session_id,
+                "selected_batch": session["batch"],
+                "subject": session["subject_name"],
+                "detected_face_count": 1,
+                "recognition_threshold": tolerance,
+                **load_debug,
+                "decisions": [detection_debug],
+            },
+        )
+
+    # Increment confirmation streak for this student
+    streak_key = (db_path, session_id, student_id)
+    streak_count = _RECOGNITION_STREAKS.get(streak_key, 0) + 1
+    _RECOGNITION_STREAKS[streak_key] = streak_count
+
+    detection_debug = {
+        "detected_face_count": 1,
+        "best_matched_student_id": student_id,
+        "best_name": name,
+        "best_euclidean_distance": best_distance,
+        "configured_threshold": tolerance,
+        "confirmation_streak": streak_count,
+        "student_db_batch": student["batch"] if student else "",
+        "active_session_batch": session["batch"],
+    }
+
+    if streak_count < REQUIRED_CONFIRMATION_FRAMES:
+        detection_debug["final_recognition_status"] = "confirming"
+        detection_debug["reason"] = "confirming"
+        logger.info(
+            "Recognition frame: session_id=%s detected_face_count=1 best_matched=%s best_distance=%.4f threshold=%.4f final_status=confirming streak=%s/%s",
+            session_id,
+            student_id,
+            best_distance,
+            tolerance,
+            streak_count,
+            REQUIRED_CONFIRMATION_FRAMES,
+        )
+        detection = FrameDetectionResponse(
+            student_id=student_id,
+            name=name,
+            distance=best_distance,
+            status="confirming",
+            warning=f"Face recognized — confirming ({streak_count}/{REQUIRED_CONFIRMATION_FRAMES})...",
+            debug=detection_debug,
+        )
+        present_students = _get_present_students_payload(session_id=session_id, db_path=db_path)
+        return FrameProcessResponse(
+            session_id=session_id,
+            marked_in_frame=[detection],
+            present_students=present_students,
+            debug={
+                "session_id": session_id,
+                "selected_batch": session["batch"],
+                "subject": session["subject_name"],
+                "detected_face_count": 1,
+                "recognition_threshold": tolerance,
+                **load_debug,
+                "decisions": [detection_debug],
+            },
+        )
+
+    # Confirmation streak completed: mark attendance
+    mark_result = mark_session_attendance(
+        session_id=session_id,
+        student_id=student_id,
+        db_path=db_path,
+    )
+    if not mark_result["ok"]:
+        detection_debug["final_recognition_status"] = mark_result["reason"]
+        detection_debug["reason"] = mark_result["reason"]
+        detection_debug["message"] = mark_result.get("message")
+        warning = mark_result.get("message") or "Attendance was not marked."
+        logger.info(
+            "Recognition frame: session_id=%s detected_face_count=1 best_matched=%s best_distance=%.4f threshold=%.4f final_status=%s message=%s",
+            session_id,
+            student_id,
+            best_distance,
+            tolerance,
+            mark_result["reason"],
+            warning,
+        )
+        detection = FrameDetectionResponse(
+            student_id=student_id,
+            name=name,
+            distance=best_distance,
+            status=mark_result["reason"],
+            warning=warning,
+            debug=detection_debug,
+        )
+        present_students = _get_present_students_payload(session_id=session_id, db_path=db_path)
+        return FrameProcessResponse(
+            session_id=session_id,
+            marked_in_frame=[detection],
+            present_students=present_students,
+            debug={
+                "session_id": session_id,
+                "selected_batch": session["batch"],
+                "subject": session["subject_name"],
+                "detected_face_count": 1,
+                "recognition_threshold": tolerance,
+                **load_debug,
+                "decisions": [detection_debug],
+            },
+        )
+
+    status_str = "registered"
+    detection_debug["final_recognition_status"] = status_str
+    detection_debug["reason"] = mark_result["reason"]
+    detection_debug["attendance_inserted"] = mark_result["inserted"]
+    warning = "Attendance marked successfully." if mark_result["inserted"] else "Attendance already marked."
+
+    logger.info(
+        "Attendance marked: session_id=%s detected_face_count=1 best_matched=%s best_distance=%.4f threshold=%.4f final_status=%s inserted=%s",
+        session_id,
+        student_id,
+        best_distance,
+        tolerance,
+        status_str,
+        mark_result["inserted"],
+    )
+    detection = FrameDetectionResponse(
+        student_id=student_id,
+        name=name,
+        distance=best_distance,
+        status=status_str,
+        warning=warning,
+        debug=detection_debug,
+    )
     present_students = _get_present_students_payload(session_id=session_id, db_path=db_path)
     return FrameProcessResponse(
         session_id=session_id,
-        marked_in_frame=list(marked_by_student.values()),
+        marked_in_frame=[detection],
         present_students=present_students,
         debug={
             "session_id": session_id,
             "selected_batch": session["batch"],
             "subject": session["subject_name"],
-            "detected_face_count": len(recognition_results),
+            "detected_face_count": 1,
             "recognition_threshold": tolerance,
             **load_debug,
-            "decisions": decision_debug,
+            "decisions": [detection_debug],
         },
     )
 
@@ -743,3 +974,51 @@ async def register_student_via_teacher(
         rejected_images=enrollment["rejected_images"],
         results=enrollment["results"],
     )
+
+
+@router.get("/sessions/history", response_model=list[TeacherSessionHistoryItemResponse])
+def get_teacher_sessions_history(
+    request: Request,
+    teacher: TeacherResponse = Depends(_get_authenticated_teacher),
+) -> list[TeacherSessionHistoryItemResponse]:
+    history = list_teacher_session_history(teacher_id=teacher.teacher_id, db_path=request.app.state.db_path)
+    return [TeacherSessionHistoryItemResponse(**item) for item in history]
+
+
+@router.get("/sessions/{session_id}/roster", response_model=list[SessionRosterItemResponse])
+def get_teacher_session_roster(
+    session_id: int,
+    request: Request,
+    teacher: TeacherResponse = Depends(_get_authenticated_teacher),
+) -> list[SessionRosterItemResponse]:
+    session = _get_verified_teacher_session(session_id, teacher, request.app.state.db_path)
+    roster = get_session_student_roster(session_id=session["id"], db_path=request.app.state.db_path)
+    return [SessionRosterItemResponse(**item) for item in roster]
+
+
+@router.get("/reports/csv")
+def teacher_export_csv_report(
+    request: Request,
+    semester_id: str = "fall-2024",
+    teacher: TeacherResponse = Depends(_get_authenticated_teacher),
+):
+    import csv
+    import io
+    db_path = request.app.state.db_path
+    history = list_teacher_session_history(teacher_id=teacher.teacher_id, db_path=db_path)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Session ID", "Date", "Subject ID", "Subject Name", "Class Type", "Batch", "Present Count", "Marked Total"])
+
+    for item in history:
+        if item["semester_id"] == semester_id:
+            writer.writerow([item["session_id"], item["session_date"], item["subject_id"], item["subject_name"], item["class_type"], item["batch"], item["present_students"], item["marked_students"]])
+
+    csv_data = output.getvalue()
+    return Response(
+        content=csv_data,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=teacher_sessions_{teacher.teacher_id}_{semester_id}.csv"},
+    )
+

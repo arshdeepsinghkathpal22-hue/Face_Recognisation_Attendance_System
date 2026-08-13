@@ -85,7 +85,7 @@ def _quality_issue(image_rgb: np.ndarray) -> str | None:
 
     gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
     brightness = float(np.mean(gray))
-    if brightness < 35:
+    if brightness < 15:
         return "Image is too dark"
     if brightness > 240:
         return "Image is too bright"
@@ -94,6 +94,22 @@ def _quality_issue(image_rgb: np.ndarray) -> str | None:
     if blur_score < 12:
         return "Image is too blurry"
     return None
+
+
+def enhance_low_light_image(image_rgb: np.ndarray) -> np.ndarray:
+    """Enhance low-light/dark images using CLAHE on LAB color space + gamma correction."""
+    lab = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2LAB)
+    l, a, b = cv2.split(lab)
+
+    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+    cl = clahe.apply(l)
+
+    enhanced_lab = cv2.merge((cl, a, b))
+    enhanced_rgb = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2RGB)
+
+    inv_gamma = 1.0 / 1.4
+    table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)]).astype("uint8")
+    return cv2.LUT(enhanced_rgb, table)
 
 
 def extract_enrollment_encoding(image_bytes: bytes) -> tuple[np.ndarray | None, str | None]:
@@ -109,6 +125,19 @@ def extract_enrollment_encoding(image_bytes: bytes) -> tuple[np.ndarray | None, 
         return None, quality_issue
 
     locations = face_recognition.face_locations(image_rgb, model="hog")
+    enhanced_used = False
+
+    # Retry with low-light enhancement if no face detected or dark image
+    gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+    brightness = float(np.mean(gray))
+    if len(locations) == 0 or brightness < 65:
+        enhanced_rgb = enhance_low_light_image(image_rgb)
+        enhanced_locations = face_recognition.face_locations(enhanced_rgb, model="hog")
+        if len(enhanced_locations) == 1 and len(locations) == 0:
+            image_rgb = enhanced_rgb
+            locations = enhanced_locations
+            enhanced_used = True
+
     if len(locations) == 0:
         locations = face_recognition.face_locations(
             image_rgb,
@@ -127,7 +156,9 @@ def extract_enrollment_encoding(image_bytes: bytes) -> tuple[np.ndarray | None, 
     normalized = _normalize_encoding(encodings[0])
     if normalized is None:
         return None, f"Invalid face encoding dimension; expected {EMBEDDING_SIZE}"
-    return normalized, None
+
+    message = "Face detected after low-light enhancement — accepted." if enhanced_used else None
+    return normalized, message
 
 
 def save_student_encodings(
@@ -183,15 +214,16 @@ def enroll_from_images(
     collected_encodings: list[np.ndarray] = []
     results: list[dict] = []
     for image_path in image_files:
-        encoding, error = extract_enrollment_encoding(image_path.read_bytes())
+        encoding, msg_or_error = extract_enrollment_encoding(image_path.read_bytes())
+        accepted = encoding is not None
         results.append(
             {
                 "filename": image_path.name,
-                "accepted": error is None,
-                "message": error or "Accepted",
+                "accepted": accepted,
+                "message": msg_or_error if msg_or_error else ("Accepted" if accepted else "Face encoding failed"),
             }
         )
-        if error is not None or encoding is None:
+        if not accepted or encoding is None:
             continue
         collected_encodings.append(encoding)
 
@@ -215,17 +247,39 @@ def recognize_in_frame(
     known_faces: KnownFaces,
     tolerance: float = 0.5,
 ) -> list[dict]:
-    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    height, width = frame_bgr.shape[:2]
+    max_dim = max(height, width)
+    scale = 1.0
+    if max_dim > 640:
+        scale = 640.0 / max_dim
+        new_width = max(1, int(width * scale))
+        new_height = max(1, int(height * scale))
+        proc_bgr = cv2.resize(frame_bgr, (new_width, new_height), interpolation=cv2.INTER_AREA)
+    else:
+        proc_bgr = frame_bgr
+
+    frame_rgb = cv2.cvtColor(proc_bgr, cv2.COLOR_BGR2RGB)
     frame_rgb = np.ascontiguousarray(frame_rgb)
     face_locations = face_recognition.face_locations(frame_rgb, model="hog")
-    if not face_locations:
-        # Retry with upsampling for small or slightly blurred webcam faces.
+    if not face_locations and scale == 1.0:
         face_locations = face_recognition.face_locations(
             frame_rgb,
             number_of_times_to_upsample=1,
             model="hog",
         )
     face_encodings = face_recognition.face_encodings(frame_rgb, face_locations)
+
+    if scale != 1.0 and face_locations:
+        inv_scale = 1.0 / scale
+        face_locations = [
+            (
+                int(top * inv_scale),
+                int(right * inv_scale),
+                int(bottom * inv_scale),
+                int(left * inv_scale),
+            )
+            for (top, right, bottom, left) in face_locations
+        ]
 
     sanitized = _sanitize_known_faces(known_faces)
     known_encodings = sanitized["encodings"]

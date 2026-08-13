@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from app.api.auth import _get_authenticated_student
-from app.api.schemas import AttendanceSummaryResponse, SemestersListResponse, StudentResponse
-from app.db import list_active_semesters
+from app.api.schemas import AttendanceSummaryResponse, SemestersListResponse, StudentAttendanceHistoryItemResponse, StudentResponse
+from app.db import list_active_semesters, list_student_attendance_history
 from app.services.attendance_service import build_attendance_summary
 
 router = APIRouter(prefix="/api", tags=["attendance"])
@@ -36,3 +36,18 @@ def attendance_summary(
         ) from exc
 
     return AttendanceSummaryResponse(**summary)
+
+
+@router.get("/attendance/history", response_model=list[StudentAttendanceHistoryItemResponse])
+def attendance_history(
+    request: Request,
+    semester_id: str = Query("fall-2024", min_length=1),
+    student: StudentResponse = Depends(_get_authenticated_student),
+) -> list[StudentAttendanceHistoryItemResponse]:
+    history = list_student_attendance_history(
+        student_id=student.student_id,
+        semester_id=semester_id,
+        db_path=request.app.state.db_path,
+    )
+    return [StudentAttendanceHistoryItemResponse(**item) for item in history]
+

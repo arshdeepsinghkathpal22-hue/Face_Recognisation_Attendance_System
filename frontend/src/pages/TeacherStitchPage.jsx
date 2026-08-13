@@ -10,9 +10,9 @@ import {
 import teacherLiveTemplate from "../../stitch_exports/teacher_live_attendance.html?raw";
 import teacherSelectTemplate from "../../stitch_exports/teacher_select_class.html?raw";
 
-function deriveClassType(courseName) {
-  const normalized = String(courseName || "").toLowerCase();
-  if (normalized.includes("lab") || normalized.includes("practical")) {
+function deriveClassType(courseName, subjectId = "") {
+  const normalized = `${courseName || ""} ${subjectId || ""}`.toLowerCase();
+  if (normalized.includes("lab") || normalized.includes("practical") || normalized.includes("prac")) {
     return "P";
   }
   return "L";
@@ -429,16 +429,29 @@ export default function TeacherStitchPage({ teacher, onLogout }) {
 
         frameInFlight = true;
         try {
-          frameCanvas.width = width;
-          frameCanvas.height = height;
+          let targetWidth = width;
+          let targetHeight = height;
+          const maxDim = 640;
+          if (width > maxDim || height > maxDim) {
+            if (width > height) {
+              targetWidth = maxDim;
+              targetHeight = Math.round((height * maxDim) / width);
+            } else {
+              targetHeight = maxDim;
+              targetWidth = Math.round((width * maxDim) / height);
+            }
+          }
+
+          frameCanvas.width = targetWidth;
+          frameCanvas.height = targetHeight;
           const context = frameCanvas.getContext("2d");
           if (!context) {
             return;
           }
-          context.drawImage(cameraVideo, 0, 0, width, height);
+          context.drawImage(cameraVideo, 0, 0, targetWidth, targetHeight);
 
           const frameBlob = await new Promise((resolve) => {
-            frameCanvas.toBlob((blob) => resolve(blob), "image/jpeg", 0.85);
+            frameCanvas.toBlob((blob) => resolve(blob), "image/jpeg", 0.80);
           });
 
           if (!frameBlob) {
@@ -452,51 +465,42 @@ export default function TeacherStitchPage({ teacher, onLogout }) {
             doc.defaultView.console.debug("Attendance recognition debug", frameDebug);
           }
 
-          detections.forEach((detection) => {
-            if (!detection?.student_id) {
-              return;
-            }
-            const status = detection.status || "registered";
-            if (status === "confirming") {
-              cameraStatus.textContent = detection.warning || `Confirming ${detection.name || detection.student_id}...`;
-              cameraStatus.className = "mt-3 text-xs font-semibold text-cyan-700";
-              return;
-            }
-            const detectionKey = `${status}:${detection.student_id}`;
-            if (seenDetectionKeys.has(detectionKey)) {
-              return;
-            }
-            seenDetectionKeys.add(detectionKey);
-            logStack.unshift({
-              studentId: detection.student_id,
-              name: detection.name || detection.student_id,
-              status,
-              warning: detection.warning || detection.debug?.reason || ""
-            });
-          });
+          const primaryDetection = detections[0] || null;
+          if (primaryDetection) {
+            const status = primaryDetection.status || "registered";
+            const warning = primaryDetection.warning || "";
 
-          const visibleDetections = detections.filter((detection) => (detection.status || "registered") !== "confirming");
-          if (visibleDetections.length > 0) {
-            renderLogStack();
-            const registeredCount = logStack.filter((entry) => entry.status === "registered").length;
-            const mismatchCount = logStack.filter((entry) => entry.status === "batch_mismatch").length;
-            const rejectedCount = logStack.filter((entry) => entry.status !== "registered" && entry.status !== "batch_mismatch").length;
-            cameraStatus.textContent =
-              rejectedCount > 0
-                ? `Camera is live. ${registeredCount} marked, ${rejectedCount} not marked.`
-                : mismatchCount > 0
-                ? `Camera is live. ${registeredCount} marked, ${mismatchCount} batch mismatch.`
-                : `Camera is live. ${registeredCount} student(s) marked.`;
-            const lastDecision = frameDebug?.decisions?.[0];
-            if (lastDecision?.reason && lastDecision.reason !== "attendance_marked") {
-              cameraStatus.textContent += ` ${lastDecision.message || lastDecision.reason}.`;
+            if (status === "no_face") {
+              cameraStatus.textContent = warning || "No face detected.";
+              cameraStatus.className = "mt-3 text-xs font-semibold text-gray-500";
+            } else if (status === "multiple_faces") {
+              cameraStatus.textContent = warning || "Multiple faces detected. Please ensure only one registered student is visible.";
+              cameraStatus.className = "mt-3 text-xs font-semibold text-amber-600";
+            } else if (status === "face_mismatch") {
+              cameraStatus.textContent = warning || "Face mismatch — student not recognized.";
+              cameraStatus.className = "mt-3 text-xs font-semibold text-red-600";
+            } else if (status === "confirming") {
+              cameraStatus.textContent = warning || `Face recognized — confirming...`;
+              cameraStatus.className = "mt-3 text-xs font-semibold text-cyan-700";
+            } else if (status === "batch_mismatch") {
+              cameraStatus.textContent = warning || `Batch mismatch for ${primaryDetection.name || primaryDetection.student_id}.`;
+              cameraStatus.className = "mt-3 text-xs font-semibold text-amber-600";
+            } else if (status === "registered" || status === "attendance_marked" || status === "already_marked") {
+              const detectionKey = `${status}:${primaryDetection.student_id}`;
+              if (!seenDetectionKeys.has(detectionKey)) {
+                seenDetectionKeys.add(detectionKey);
+                logStack.unshift({
+                  studentId: primaryDetection.student_id,
+                  name: primaryDetection.name || primaryDetection.student_id,
+                  status: "registered",
+                  warning: warning || "Attendance marked"
+                });
+                renderLogStack();
+              }
+              const registeredCount = logStack.filter((entry) => entry.status === "registered").length;
+              cameraStatus.textContent = `${warning || "Attendance marked successfully."} (${registeredCount} student(s) marked)`;
+              cameraStatus.className = "mt-3 text-xs font-semibold text-emerald-700";
             }
-            cameraStatus.className =
-              rejectedCount > 0
-                ? "mt-3 text-xs font-semibold text-red-700"
-                : mismatchCount > 0
-                ? "mt-3 text-xs font-semibold text-amber-700"
-                : "mt-3 text-xs font-semibold text-emerald-700";
           }
         } catch (error) {
           const status = error?.status ? `HTTP ${error.status}: ` : "";
@@ -515,7 +519,7 @@ export default function TeacherStitchPage({ teacher, onLogout }) {
         clearFrameLoop();
         frameIntervalId = setInterval(() => {
           void processNextFrame();
-        }, 1700);
+        }, 300);
       };
 
       const stopCameraStream = () => {

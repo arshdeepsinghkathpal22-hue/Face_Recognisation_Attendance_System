@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import StitchIframe from "@/components/StitchIframe";
-import { getAttendanceSummary, getSemesters } from "@/services/api";
+import { getAttendanceSummary, getSemesters, getStudentAttendanceHistory } from "@/services/api";
 import studentDashboardTemplate from "../../stitch_exports/student_dashboard.html?raw";
 
 function escapeHtml(value) {
@@ -151,7 +151,50 @@ function buildTotalAttendanceMarkup(rows, summary) {
   `;
 }
 
-function buildDashboardHtml(student, rows, summary) {
+function buildHistoryMarkup(history) {
+  if (!history || !history.length) {
+    return `<div style="margin-top: 24px; padding: 20px; background: white; border-radius: 12px; color: #6b7280; font-size: 14px;">No attendance history recorded for this semester yet.</div>`;
+  }
+  return `
+    <div style="margin-top: 24px; background: rgba(255,255,255,.96); border: 1px solid rgba(226,232,240,.9); border-radius: 12px; padding: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.02);">
+      <h3 style="margin: 0 0 16px; font-size: 18px; font-weight: 800; color: #111827;">Session History Timeline</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Subject</th>
+            <th>Class Type</th>
+            <th>Time</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          ${history
+            .map(
+              (item) => `
+            <tr class="hover:bg-gray-50/30 transition-colors">
+              <td class="px-6 py-4 text-sm font-semibold text-gray-800">${escapeHtml(item.session_date)}</td>
+              <td class="px-6 py-4 text-sm text-gray-700">${escapeHtml(item.subject_name)}</td>
+              <td class="px-6 py-4 text-sm text-gray-600">${escapeHtml(item.class_type === "L" ? "Lecture" : item.class_type === "P" ? "Practical" : "Tutorial")}</td>
+              <td class="px-6 py-4 text-sm text-gray-500">${escapeHtml(item.start_time || "—")}</td>
+              <td class="px-6 py-4 text-sm">
+                ${
+                  item.present === 1
+                    ? '<span class="px-2.5 py-1 text-xs font-bold bg-green-100 text-green-800 rounded-md">Present</span>'
+                    : '<span class="px-2.5 py-1 text-xs font-bold bg-red-100 text-red-800 rounded-md">Absent</span>'
+                }
+              </td>
+            </tr>
+          `
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function buildDashboardHtml(student, rows, summary, history) {
   let html = updateSummaryFields(studentDashboardTemplate, student);
   html = html.replace(
     /<tbody class="divide-y divide-gray-100">[\s\S]*?<\/tbody>/,
@@ -161,16 +204,21 @@ function buildDashboardHtml(student, rows, summary) {
     '<section class="bg-white rounded-xl border border-gray-200 shadow-[0_1px_3px_rgba(0,0,0,0.02)] overflow-hidden">',
     `${buildTotalAttendanceMarkup(rows, summary)}<section class="bg-white rounded-xl border border-gray-200 shadow-[0_1px_3px_rgba(0,0,0,0.02)] overflow-hidden">`
   );
+  html = html.replace(
+    "</main>",
+    `${buildHistoryMarkup(history)}</main>`
+  );
   return html;
 }
 
 export default function StudentStitchPage({ student, onLogout }) {
   const [rows, setRows] = useState([]);
   const [summary, setSummary] = useState(null);
+  const [history, setHistory] = useState([]);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    async function loadSummary() {
+    async function loadData() {
       try {
         setError("");
         const semesters = await getSemesters();
@@ -178,20 +226,25 @@ export default function StudentStitchPage({ student, onLogout }) {
         if (!firstSemester) {
           setRows([]);
           setSummary(null);
+          setHistory([]);
           return;
         }
-        const summary = await getAttendanceSummary(firstSemester.id);
-        setRows(summary.rows || []);
-        setSummary(summary);
+        const [sumRes, histRes] = await Promise.all([
+          getAttendanceSummary(firstSemester.id),
+          getStudentAttendanceHistory(firstSemester.id).catch(() => []),
+        ]);
+        setRows(sumRes.rows || []);
+        setSummary(sumRes);
+        setHistory(histRes || []);
       } catch (apiError) {
         setError(apiError.message || "Failed to load attendance summary.");
       }
     }
 
-    loadSummary();
+    loadData();
   }, []);
 
-  const html = useMemo(() => buildDashboardHtml(student, rows, summary), [student, rows, summary]);
+  const html = useMemo(() => buildDashboardHtml(student, rows, summary, history), [student, rows, summary, history]);
 
   const bindActions = useCallback(
     (doc) => {
@@ -222,3 +275,4 @@ export default function StudentStitchPage({ student, onLogout }) {
     </div>
   );
 }
+

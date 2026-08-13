@@ -67,13 +67,14 @@ async def enroll_student_uploads(
             )
             continue
 
-        encoding, error = extract_enrollment_encoding(image_bytes)
-        if error is not None or encoding is None:
+        encoding, msg_or_error = extract_enrollment_encoding(image_bytes)
+        accepted_status = encoding is not None
+        if not accepted_status or encoding is None:
             results.append(
                 {
                     "filename": original_name,
                     "accepted": False,
-                    "message": error or "Face encoding failed",
+                    "message": msg_or_error or "Face encoding failed",
                 }
             )
             continue
@@ -85,7 +86,7 @@ async def enroll_student_uploads(
             {
                 "filename": original_name,
                 "accepted": True,
-                "message": "Accepted",
+                "message": msg_or_error or "Accepted",
             }
         )
 

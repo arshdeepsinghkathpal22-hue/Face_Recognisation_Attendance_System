@@ -134,10 +134,13 @@ export default function AdminStitchPage({ admin, onLogout }) {
       directoryPanel.innerHTML = `
         <div style="display: flex; justify-content: space-between; gap: 16px; align-items: center; flex-wrap: wrap;">
           <div>
-            <h3 style="margin: 0 0 6px; font-size: 18px;">Saved Records</h3>
-            <p class="muted" style="margin: 0; font-size: 13px;">Persisted teachers and students from the database.</p>
+            <h3 style="margin: 0 0 6px; font-size: 18px;">Saved Records & Reports</h3>
+            <p class="muted" style="margin: 0; font-size: 13px;">Persisted teachers, students, and attendance reports.</p>
           </div>
-          <button class="signout" type="button" data-directory-action="refresh">Refresh</button>
+          <div style="display: flex; gap: 10px;">
+            <button class="signout" type="button" data-admin-action="export-csv" style="background: #2563eb;">Export CSV Report</button>
+            <button class="signout" type="button" data-directory-action="refresh">Refresh</button>
+          </div>
         </div>
         <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 18px;">
           <div>
@@ -219,6 +222,16 @@ export default function AdminStitchPage({ admin, onLogout }) {
         }
       };
       void loadDirectory();
+
+      const exportCsvButton = directoryPanel.querySelector('[data-admin-action="export-csv"]');
+      if (exportCsvButton) {
+        const handleExportCsv = (event) => {
+          event.preventDefault();
+          window.open("/api/admin/reports/csv", "_blank");
+        };
+        exportCsvButton.addEventListener("click", handleExportCsv);
+        cleanup.push(() => exportCsvButton.removeEventListener("click", handleExportCsv));
+      }
 
       if (refreshDirectoryButton) {
         const handleRefreshDirectory = (event) => {
@@ -440,33 +453,49 @@ export default function AdminStitchPage({ admin, onLogout }) {
 
       const liveCaptureButton = doc.createElement("button");
       liveCaptureButton.type = "button";
-      liveCaptureButton.className =
-        "mt-3 border border-outline-variant/40 bg-surface-container-high text-primary font-body text-sm font-medium py-3 px-8 rounded-DEFAULT hover:bg-surface-container-highest transition-colors flex items-center gap-2";
+      liveCaptureButton.className = "signout";
+      liveCaptureButton.style.cssText =
+        "background: #0e7490; color: #ffffff; padding: 11px 16px; border-radius: 8px; font-size: 12px; font-weight: 850; cursor: pointer; border: 0; display: inline-flex; align-items: center; gap: 8px; margin-left: 10px; box-shadow: 0 4px 12px rgba(14, 116, 144, 0.25); transition: background 0.15s ease;";
       liveCaptureButton.innerHTML =
-        '<span class="material-symbols-outlined text-sm">photo_camera</span><span>Capture Live Photo</span>';
+        '<span style="font-size: 14px;">📷</span><span>Live Photo</span>';
+      liveCaptureButton.onmouseenter = () => {
+        liveCaptureButton.style.background = "#0891b2";
+      };
+      liveCaptureButton.onmouseleave = () => {
+        liveCaptureButton.style.background = "#0e7490";
+      };
+
       const queueDetails = doc.createElement("div");
       queueDetails.style.cssText = "display: grid; gap: 8px; margin-top: 12px;";
 
       const cameraModal = doc.createElement("div");
-      cameraModal.className = "fixed inset-0 z-[1000] hidden items-center justify-center bg-black/70 p-4";
+      cameraModal.style.cssText =
+        "position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 99999; display: none; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.75); padding: 16px; backdrop-filter: blur(4px);";
       cameraModal.innerHTML = `
-        <div class="w-full max-w-2xl rounded-lg bg-white p-4 shadow-2xl">
-          <div class="mb-3 flex items-center justify-between">
-            <h3 class="text-sm font-bold text-gray-900">Live Camera Capture</h3>
-            <button type="button" data-action="close" class="rounded bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-700 hover:bg-gray-200">Close</button>
+        <div style="width: 100%; max-width: 640px; background: #ffffff; border-radius: 12px; padding: 20px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.3); font-family: Inter, Arial, sans-serif;">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+            <h3 style="margin: 0; font-size: 16px; font-weight: 800; color: #111827;">Live Camera Capture</h3>
+            <button type="button" data-action="close" style="background: #f3f4f6; color: #374151; padding: 6px 14px; border-radius: 6px; font-size: 12px; font-weight: 700; cursor: pointer; border: 0;">Close</button>
           </div>
-          <div class="overflow-hidden rounded bg-black">
-            <video autoplay playsinline class="h-[420px] w-full object-cover"></video>
-            <canvas class="hidden"></canvas>
+          
+          <div data-modal="status" style="margin-bottom: 10px; font-size: 12px; font-weight: 700; color: #374151; padding: 8px 12px; border-radius: 6px; background: #f9fafb; border: 1px solid #e5e7eb;">
+            Starting camera...
           </div>
-          <div class="mt-3 flex items-center justify-between">
-            <p class="text-xs text-gray-600">Queue: <span data-action="queue-count">0</span>/15</p>
-            <button type="button" data-action="capture" class="rounded bg-black px-4 py-2 text-xs font-semibold text-white hover:bg-gray-800">Capture Photo</button>
+
+          <div style="position: relative; width: 100%; height: 380px; background: #000000; border-radius: 8px; overflow: hidden; display: flex; align-items: center; justify-content: center;">
+            <video autoplay playsinline muted style="width: 100%; height: 100%; object-fit: cover; display: block; background: #000000;"></video>
+            <canvas style="display: none;"></canvas>
+          </div>
+
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 14px;">
+            <span style="font-size: 12px; font-weight: 700; color: #4b5563;">Queue: <span data-action="queue-count">0</span> / 15</span>
+            <button type="button" data-action="capture" disabled style="background: #111827; color: #ffffff; padding: 10px 22px; border-radius: 8px; font-size: 13px; font-weight: 800; cursor: not-allowed; opacity: 0.5; border: 0; transition: all 0.2s ease;">Capture Photo</button>
           </div>
         </div>
       `;
       doc.body.appendChild(cameraModal);
 
+      const modalStatus = cameraModal.querySelector('[data-modal="status"]');
       const cameraVideo = cameraModal.querySelector("video");
       const cameraCanvas = cameraModal.querySelector("canvas");
       const closeCameraButton = cameraModal.querySelector('[data-action="close"]');
@@ -475,32 +504,109 @@ export default function AdminStitchPage({ admin, onLogout }) {
 
       let cameraStream = null;
 
+      const setModalStatus = (msg, isError = false) => {
+        if (!modalStatus) return;
+        modalStatus.textContent = msg;
+        if (isError) {
+          modalStatus.style.color = "#991b1b";
+          modalStatus.style.background = "#fef2f2";
+          modalStatus.style.borderColor = "#fecaca";
+        } else {
+          modalStatus.style.color = "#065f46";
+          modalStatus.style.background = "#ecfdf5";
+          modalStatus.style.borderColor = "#a7f3d0";
+        }
+      };
+
+      let validationResults = [];
+
       const updateUploadQueue = () => {
+        const validCount = validationResults.length
+          ? validationResults.filter((r) => r.accepted).length
+          : selectedFiles.length;
+
         if (uploadQueueHeading) {
           uploadQueueHeading.textContent = `Upload Queue (${selectedFiles.length}/${maxUploads})`;
         }
         if (queueCount) {
           queueCount.textContent = String(selectedFiles.length);
         }
+
         if (queueDetails) {
-          queueDetails.innerHTML = selectedFiles.length
-            ? selectedFiles
-                .map(
-                  (file, index) => `
-                    <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 10px; background: #f8fafc;">
-                      <span style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 700; color: #334155;">${escapeHtml(file.name || `Image ${index + 1}`)}</span>
-                      <button type="button" data-remove-image="${index}" style="flex: 0 0 auto; color: #be123c; font-size: 12px; font-weight: 900; background: transparent;">Delete</button>
-                    </div>
-                  `
-                )
-                .join("")
-            : `<div style="border: 1px dashed #cbd5e1; border-radius: 8px; padding: 10px; color: #64748b; font-size: 12px; font-weight: 700;">Add ${minUploads}-${maxUploads} clear single-face images.</div>`;
+          if (!selectedFiles.length) {
+            queueDetails.innerHTML = `<div style="border: 1px dashed #cbd5e1; border-radius: 8px; padding: 12px; color: #64748b; font-size: 12px; font-weight: 700;">Add ${minUploads}-${maxUploads} clear face images. Low-light photos are automatically enhanced.</div>`;
+            return;
+          }
+
+          const hasFailures = validationResults.some((r) => !r.accepted);
+
+          const headerBadgeMarkup = `
+            <div style="display: flex; items-center; justify-content: space-between; gap: 10px; margin-bottom: 8px; padding: 8px 12px; border-radius: 8px; background: #f1f5f9; border: 1px solid #cbd5e1;">
+              <span style="font-size: 12px; font-weight: 800; color: #1e293b;">
+                Valid photos: <strong style="color: ${validCount >= minUploads ? "#15803d" : "#b91c1c"};">${validCount}</strong> / ${maxUploads} (Required: ${minUploads}–${maxUploads})
+              </span>
+              ${
+                hasFailures
+                  ? '<button type="button" data-action="remove-failed" style="font-size: 11px; font-weight: 800; color: #be123c; background: #ffe4e6; border: 1px solid #fecdd3; border-radius: 6px; padding: 3px 8px;">Remove Failed Images</button>'
+                  : ""
+              }
+            </div>
+          `;
+
+          const itemsMarkup = selectedFiles
+            .map((file, index) => {
+              const res = validationResults.find((r) => r.filename === file.name);
+              const accepted = res ? res.accepted : null;
+              const msg = res ? res.message : "Pending submission";
+
+              let badgeStyle = "background: #f8fafc; border-color: #e5e7eb; color: #475569;";
+              let icon = "📷";
+              if (accepted === true) {
+                badgeStyle = "background: #f0fdf4; border-color: #bbf7d0; color: #166534;";
+                icon = "✓ Accepted";
+              } else if (accepted === false) {
+                badgeStyle = "background: #fef2f2; border-color: #fecaca; color: #991b1b;";
+                icon = "✗ Rejected";
+              }
+
+              return `
+                <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid; border-radius: 8px; padding: 8px 12px; ${badgeStyle}">
+                  <div style="min-width: 0; flex: 1;">
+                    <div style="font-size: 12px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(file.name || `Image ${index + 1}`)}</div>
+                    <div style="font-size: 11px; font-weight: 600; opacity: 0.9;">${accepted !== null ? `${icon} — ${escapeHtml(msg)}` : "Queued"}</div>
+                  </div>
+                  <button type="button" data-remove-image="${index}" style="flex: 0 0 auto; color: #be123c; font-size: 12px; font-weight: 900; background: transparent;">Delete</button>
+                </div>
+              `;
+            })
+            .join("");
+
+          queueDetails.innerHTML = `${headerBadgeMarkup}${itemsMarkup}`;
+
+          const removeFailedBtn = queueDetails.querySelector('[data-action="remove-failed"]');
+          if (removeFailedBtn) {
+            const handleRemoveFailed = (event) => {
+              event.preventDefault();
+              const failedNames = new Set(
+                validationResults.filter((r) => !r.accepted).map((r) => r.filename)
+              );
+              selectedFiles = selectedFiles.filter((file) => !failedNames.has(file.name));
+              validationResults = validationResults.filter((r) => r.accepted);
+              updateUploadQueue();
+              setStatus("Removed failed images from queue. Add replacements if needed.");
+            };
+            removeFailedBtn.addEventListener("click", handleRemoveFailed, { once: true });
+          }
 
           queueDetails.querySelectorAll("[data-remove-image]").forEach((button) => {
             const removeHandler = (event) => {
               event.preventDefault();
               const index = Number(button.getAttribute("data-remove-image"));
+              const removedFile = selectedFiles[index];
               selectedFiles = selectedFiles.filter((_, itemIndex) => itemIndex !== index);
+              if (removedFile) {
+                validationResults = validationResults.filter((r) => r.filename !== removedFile.name);
+              }
               updateUploadQueue();
               setStatus("Image removed. Add a replacement if needed.");
             };
@@ -553,46 +659,94 @@ export default function AdminStitchPage({ admin, onLogout }) {
         if (cameraVideo) {
           cameraVideo.srcObject = null;
         }
+        if (captureCameraButton) {
+          captureCameraButton.disabled = true;
+          captureCameraButton.style.opacity = "0.5";
+          captureCameraButton.style.cursor = "not-allowed";
+        }
       };
 
       const closeCameraModal = () => {
-        cameraModal.classList.add("hidden");
-        cameraModal.classList.remove("flex");
+        cameraModal.style.display = "none";
         stopCameraStream();
       };
 
       const openCameraModal = async () => {
+        console.log("CAMERA BUTTON CLICKED");
         if (selectedFiles.length >= maxUploads) {
           setStatus(`Upload queue is full (${maxUploads}/${maxUploads}).`, "error");
           return;
         }
 
-        if (!doc.defaultView?.navigator?.mediaDevices?.getUserMedia) {
-          setStatus("Live camera capture is not supported in this browser.", "error");
+        const nav = doc.defaultView?.navigator || window.navigator;
+        if (!nav?.mediaDevices?.getUserMedia) {
+          console.error("CAMERA ERROR: navigator.mediaDevices is undefined or getUserMedia not supported");
+          setStatus("Camera access requires a secure localhost/HTTPS context.", "error");
           return;
         }
 
-        cameraModal.classList.remove("hidden");
-        cameraModal.classList.add("flex");
+        if (captureCameraButton) {
+          captureCameraButton.disabled = true;
+          captureCameraButton.style.opacity = "0.5";
+          captureCameraButton.style.cursor = "not-allowed";
+        }
 
+        cameraModal.style.display = "flex";
+        setModalStatus("Requesting camera permission...");
+
+        console.log("REQUESTING CAMERA");
         try {
-          cameraStream = await doc.defaultView.navigator.mediaDevices.getUserMedia({
+          cameraStream = await nav.mediaDevices.getUserMedia({
             video: { facingMode: "user" },
             audio: false
           });
-          if (cameraVideo) {
-            cameraVideo.srcObject = cameraStream;
-            await cameraVideo.play();
+          console.log("STREAM RECEIVED", cameraStream);
+
+          if (!cameraVideo) {
+            console.error("CAMERA ERROR: Video element does not exist");
+            setModalStatus("Video element missing", true);
+            return;
           }
-          setStatus("Camera ready. Click Capture Photo to add images.");
-        } catch (_error) {
-          closeCameraModal();
-          setStatus("Unable to access camera. Please allow camera permission.", "error");
+
+          console.log("VIDEO REF READY", cameraVideo);
+          cameraVideo.srcObject = cameraStream;
+          console.log("STREAM ASSIGNED");
+
+          await cameraVideo.play().catch((playErr) => {
+            console.warn("Video play error (will retry):", playErr);
+          });
+          console.log("VIDEO PLAYING");
+          console.log("CAMERA STARTED");
+
+          if (captureCameraButton) {
+            captureCameraButton.disabled = false;
+            captureCameraButton.style.opacity = "1";
+            captureCameraButton.style.cursor = "pointer";
+          }
+          setModalStatus("Camera active. Click Capture Photo to add images.");
+        } catch (error) {
+          console.error("CAMERA ERROR:", error);
+          stopCameraStream();
+
+          const errName = error?.name || "";
+          let userMsg = `Camera error: ${error?.message || error}`;
+          if (errName === "NotAllowedError" || errName === "PermissionDeniedError") {
+            userMsg = "Camera permission denied. Please allow camera access in your browser.";
+          } else if (errName === "NotFoundError" || errName === "DevicesNotFoundError") {
+            userMsg = "No camera found.";
+          } else if (errName === "NotReadableError" || errName === "TrackStartError") {
+            userMsg = "Camera is currently in use by another application.";
+          } else if (errName === "SecurityError") {
+            userMsg = "Camera access requires a secure localhost/HTTPS context.";
+          }
+
+          setModalStatus(userMsg, true);
         }
       };
 
       const capturePhotoFromCamera = () => {
         if (!cameraVideo || !cameraCanvas) {
+          console.error("CAMERA ERROR: Missing video or canvas element for capture");
           return;
         }
 
@@ -602,10 +756,10 @@ export default function AdminStitchPage({ admin, onLogout }) {
           return;
         }
 
-        const width = cameraVideo.videoWidth;
-        const height = cameraVideo.videoHeight;
+        const width = cameraVideo.videoWidth || 640;
+        const height = cameraVideo.videoHeight || 480;
         if (!width || !height) {
-          setStatus("Camera is still warming up. Try again in a moment.", "error");
+          setModalStatus("Camera is warming up. Please wait a moment...", true);
           return;
         }
 
@@ -613,7 +767,7 @@ export default function AdminStitchPage({ admin, onLogout }) {
         cameraCanvas.height = height;
         const context = cameraCanvas.getContext("2d");
         if (!context) {
-          setStatus("Failed to capture image from camera.", "error");
+          setModalStatus("Failed to capture frame context.", true);
           return;
         }
 
@@ -621,13 +775,14 @@ export default function AdminStitchPage({ admin, onLogout }) {
         cameraCanvas.toBlob(
           (blob) => {
             if (!blob) {
-              setStatus("Failed to capture image from camera.", "error");
+              setModalStatus("Failed to create image blob.", true);
               return;
             }
 
             const timestamp = new Date().toISOString().replace(/[.:]/g, "-");
             const capturedFile = new File([blob], `live_${timestamp}.jpg`, { type: "image/jpeg" });
             addFilesToQueue([capturedFile], "live camera");
+            setModalStatus(`Photo captured! Total in queue: ${selectedFiles.length}/${maxUploads}`);
 
             if (selectedFiles.length >= maxUploads) {
               closeCameraModal();
@@ -729,7 +884,7 @@ export default function AdminStitchPage({ admin, onLogout }) {
           }
 
           registerButton.disabled = true;
-          setStatus("Registering profile...", "neutral");
+          setStatus("Processing face encodings & validating images...", "neutral");
 
           try {
             const branch = inferBranchFromBatch(batch);
@@ -741,21 +896,11 @@ export default function AdminStitchPage({ admin, onLogout }) {
               images: selectedFiles
             });
 
+            validationResults = response.results || [];
             setStatus(
-              `Registered ${response.student.name} (${response.student.student_id}) with ${response.valid_images}/${response.uploaded_images} valid image(s). ${response.rejected_images || 0} rejected.`,
+              `Registered ${response.student.name} (${response.student.student_id}) with ${response.valid_images}/${response.uploaded_images} valid image(s).`,
               "success"
             );
-            if (response.results?.length) {
-              queueDetails.innerHTML = response.results
-                .map(
-                  (result) => `
-                    <div style="border: 1px solid ${result.accepted ? "#bbf7d0" : "#fecaca"}; border-radius: 8px; padding: 8px 10px; background: ${result.accepted ? "#f0fdf4" : "#fef2f2"}; font-size: 12px; font-weight: 700; color: ${result.accepted ? "#166534" : "#991b1b"};">
-                      ${escapeHtml(result.filename)} - ${escapeHtml(result.message)}
-                    </div>
-                  `
-                )
-                .join("");
-            }
 
             if (nameInput) {
               nameInput.value = "";
@@ -768,26 +913,22 @@ export default function AdminStitchPage({ admin, onLogout }) {
             }
             fileInput.value = "";
             selectedFiles = [];
-            if (uploadQueueHeading) {
-              uploadQueueHeading.textContent = `Upload Queue (0/${maxUploads})`;
-            }
-            if (queueCount) {
-              queueCount.textContent = "0";
-            }
+            validationResults = [];
+            updateUploadQueue();
             void loadDirectory();
           } catch (apiError) {
-            if (apiError.detail?.results?.length) {
-              queueDetails.innerHTML = apiError.detail.results
-                .map(
-                  (result) => `
-                    <div style="border: 1px solid ${result.accepted ? "#bbf7d0" : "#fecaca"}; border-radius: 8px; padding: 8px 10px; background: ${result.accepted ? "#f0fdf4" : "#fef2f2"}; font-size: 12px; font-weight: 700; color: ${result.accepted ? "#166534" : "#991b1b"};">
-                      ${escapeHtml(result.filename)} - ${escapeHtml(result.message)}
-                    </div>
-                  `
-                )
-                .join("");
+            const results = apiError.detail?.results || [];
+            if (results.length) {
+              validationResults = results;
+              updateUploadQueue();
             }
-            setStatus(apiError.message || "Registration failed.", "error");
+            const validCount = results.filter((r) => r.accepted).length;
+            const message = apiError.detail?.message || apiError.message || "Registration failed.";
+            if (results.length) {
+              setStatus(`${message} (${validCount}/${selectedFiles.length} passed). Keep valid images and click 'Remove Failed Images' or add more.`, "error");
+            } else {
+              setStatus(message, "error");
+            }
           } finally {
             registerButton.disabled = false;
           }
@@ -821,7 +962,7 @@ export default function AdminStitchPage({ admin, onLogout }) {
 
   return (
     <div className="relative h-screen w-full bg-white">
-      <StitchIframe html={html} title="Admin Biometrics Registration" onBind={bindActions} />
+      <StitchIframe html={html} title="Admin Biometrics Registration" allow="camera *" onBind={bindActions} />
     </div>
   );
 }

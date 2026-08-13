@@ -268,3 +268,81 @@ class StudentRegisterResponse(BaseModel):
     valid_images: int
     rejected_images: int = 0
     results: list[EnrollmentImageResultResponse] = Field(default_factory=list)
+
+
+class SubjectCreateRequest(BaseModel):
+    id: str
+    semester_id: str
+    name: str
+    sort_order: int = 1
+
+
+class SubjectUpdateRequest(BaseModel):
+    name: str
+    sort_order: int = 1
+
+
+class StudentUpdateRequest(BaseModel):
+    name: str
+    branch: str
+    batch: str = ""
+
+
+class TeacherUpdateRequest(BaseModel):
+    name: str
+    email: str = ""
+    password: str = ""
+
+
+class RecentAttendanceResponse(BaseModel):
+    student_id: str
+    student_name: str
+    subject_id: str
+    subject_name: str
+    session_date: str
+    class_type: str
+    present: int
+
+
+class AdminDashboardStatsResponse(BaseModel):
+    total_students: int
+    total_teachers: int
+    total_subjects: int
+    total_sessions: int
+    overall_pct: int
+    recent_attendance: list[RecentAttendanceResponse]
+
+
+class TeacherSessionHistoryItemResponse(BaseModel):
+    session_id: int
+    subject_id: str
+    subject_name: str
+    semester_id: str
+    class_type: str
+    session_date: str
+    batch: str
+    start_time: str | None = None
+    end_time: str | None = None
+    is_active: bool
+    marked_students: int
+    present_students: int
+
+
+class SessionRosterItemResponse(BaseModel):
+    student_id: str
+    name: str
+    branch: str
+    batch: str
+    present: int
+
+
+class StudentAttendanceHistoryItemResponse(BaseModel):
+    session_id: int
+    session_date: str
+    start_time: str | None = None
+    end_time: str | None = None
+    class_type: str
+    subject_id: str
+    subject_name: str
+    present: int
+

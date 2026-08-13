@@ -1526,3 +1526,149 @@ def test_runtime_assignments_enrollments_and_attendance_persist_after_restart(tm
         summary = client.get("/api/attendance/summary", params={"semester_id": "fall-2024"})
         assert summary.status_code == 200
         assert summary.json()["total_attended"] == 1
+
+
+def test_unknown_face_and_recognition_flow_security(tmp_path, monkeypatch) -> None:
+    db_path = str(tmp_path / "test_unknown_face_flow.db")
+    initialize_db(db_path=db_path)
+    _seed_teacher(db_path)
+    _seed_student(db_path)
+    upsert_semester("fall-2024", "Fall 2024", 1, 1, db_path=db_path)
+    upsert_subject("ENV", "fall-2024", "Environment", 1, db_path=db_path)
+    _enroll_student(db_path, subject_id="ENV")
+    _assign_teacher(db_path, batch="CSE-A")
+
+    monkeypatch.setattr(
+        "app.api.teacher._get_known_faces",
+        lambda: {"student_ids": ["22BCS001"], "names": ["Rahul Sharma"], "encodings": [np.zeros(128)]},
+    )
+
+    import cv2
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    ok, buffer = cv2.imencode(".jpg", frame)
+    assert ok is True
+    frame_bytes = buffer.tobytes()
+
+    with _client_for_db(db_path) as client:
+        assert client.post("/api/teacher/auth/login", json={"teacher_id": "admin", "password": "admin"}).status_code == 200
+        start = client.post(
+            "/api/teacher/sessions/start",
+            json={
+                "batch": "CSE-A",
+                "semester_id": "fall-2024",
+                "subject_id": "ENV",
+                "class_type": "L",
+                "start_time": "09:00",
+                "end_time": "10:00",
+            },
+        )
+        assert start.status_code == 200
+        session_id = start.json()["session_id"]
+
+        # Case 5: Show no face -> no_face
+        monkeypatch.setattr("app.api.teacher.recognize_in_frame", lambda *_a, **_k: [])
+        res_no_face = client.post(
+            f"/api/teacher/sessions/{session_id}/frame",
+            data={"tolerance": "0.6", "mode": "recognize"},
+            files={"frame": ("frame.jpg", frame_bytes, "image/jpeg")},
+        )
+        assert res_no_face.status_code == 200
+        item = res_no_face.json()["marked_in_frame"][0]
+        assert item["status"] == "no_face"
+        assert item["warning"] == "No face detected."
+
+        # Case 6: Show two faces -> multiple_faces
+        monkeypatch.setattr(
+            "app.api.teacher.recognize_in_frame",
+            lambda *_a, **_k: [
+                {"matched": False, "student_id": "Unknown", "name": "Unknown", "distance": 0.7, "best_student_id": "22BCS001", "best_name": "Rahul Sharma"},
+                {"matched": False, "student_id": "Unknown", "name": "Unknown", "distance": 0.8, "best_student_id": "22BCS001", "best_name": "Rahul Sharma"},
+            ],
+        )
+        res_multi = client.post(
+            f"/api/teacher/sessions/{session_id}/frame",
+            data={"tolerance": "0.6", "mode": "recognize"},
+            files={"frame": ("frame.jpg", frame_bytes, "image/jpeg")},
+        )
+        assert res_multi.status_code == 200
+        item = res_multi.json()["marked_in_frame"][0]
+        assert item["status"] == "multiple_faces"
+        assert "Multiple faces detected" in item["warning"]
+
+        # Case 2: Show completely different / unknown face -> face_mismatch & no attendance
+        monkeypatch.setattr(
+            "app.api.teacher.recognize_in_frame",
+            lambda *_a, **_k: [
+                {"matched": False, "student_id": "Unknown", "name": "Unknown", "distance": 0.75, "best_student_id": "22BCS001", "best_name": "Rahul Sharma", "reason": "distance_above_threshold"}
+            ],
+        )
+        res_mismatch = client.post(
+            f"/api/teacher/sessions/{session_id}/frame",
+            data={"tolerance": "0.6", "mode": "recognize"},
+            files={"frame": ("frame.jpg", frame_bytes, "image/jpeg")},
+        )
+        assert res_mismatch.status_code == 200
+        item = res_mismatch.json()["marked_in_frame"][0]
+        assert item["status"] == "face_mismatch"
+        assert item["warning"] == "Face does not match any registered student."
+        assert _session_attendance_count(db_path, session_id, "22BCS001") == 0
+
+        # Case 1 & 3: Show enrolled face for frame 1 -> recognized & confirming (streak=1)
+        monkeypatch.setattr(
+            "app.api.teacher.recognize_in_frame",
+            lambda *_a, **_k: [
+                {"matched": True, "student_id": "22BCS001", "name": "Rahul Sharma", "distance": 0.1, "best_student_id": "22BCS001", "best_name": "Rahul Sharma"}
+            ],
+        )
+        res_enrolled_1 = client.post(
+            f"/api/teacher/sessions/{session_id}/frame",
+            data={"tolerance": "0.6", "mode": "recognize"},
+            files={"frame": ("frame.jpg", frame_bytes, "image/jpeg")},
+        )
+        assert res_enrolled_1.status_code == 200
+        assert res_enrolled_1.json()["marked_in_frame"][0]["status"] == "confirming"
+
+        # Show different face on frame 2 -> face_mismatch & reset streak
+        monkeypatch.setattr(
+            "app.api.teacher.recognize_in_frame",
+            lambda *_a, **_k: [
+                {"matched": False, "student_id": "Unknown", "name": "Unknown", "distance": 0.85, "best_student_id": "22BCS001", "best_name": "Rahul Sharma", "reason": "distance_above_threshold"}
+            ],
+        )
+        res_mismatch_2 = client.post(
+            f"/api/teacher/sessions/{session_id}/frame",
+            data={"tolerance": "0.6", "mode": "recognize"},
+            files={"frame": ("frame.jpg", frame_bytes, "image/jpeg")},
+        )
+        assert res_mismatch_2.status_code == 200
+        assert res_mismatch_2.json()["marked_in_frame"][0]["status"] == "face_mismatch"
+        assert _session_attendance_count(db_path, session_id, "22BCS001") == 0
+
+        # Case 4: Show enrolled face again -> MUST start confirming from streak 1, not 2!
+        monkeypatch.setattr(
+            "app.api.teacher.recognize_in_frame",
+            lambda *_a, **_k: [
+                {"matched": True, "student_id": "22BCS001", "name": "Rahul Sharma", "distance": 0.1, "best_student_id": "22BCS001", "best_name": "Rahul Sharma"}
+            ],
+        )
+        res_enrolled_again_1 = client.post(
+            f"/api/teacher/sessions/{session_id}/frame",
+            data={"tolerance": "0.6", "mode": "recognize"},
+            files={"frame": ("frame.jpg", frame_bytes, "image/jpeg")},
+        )
+        assert res_enrolled_again_1.status_code == 200
+        assert res_enrolled_again_1.json()["marked_in_frame"][0]["status"] == "confirming"
+        assert _session_attendance_count(db_path, session_id, "22BCS001") == 0
+
+        # Show enrolled face 2nd consecutive time -> registered & marked in DB!
+        res_enrolled_again_2 = client.post(
+            f"/api/teacher/sessions/{session_id}/frame",
+            data={"tolerance": "0.6", "mode": "recognize"},
+            files={"frame": ("frame.jpg", frame_bytes, "image/jpeg")},
+        )
+        assert res_enrolled_again_2.status_code == 200
+        assert res_enrolled_again_2.json()["marked_in_frame"][0]["status"] == "registered"
+        assert res_enrolled_again_2.json()["marked_in_frame"][0]["warning"] == "Attendance marked successfully."
+        # Case 7: Verify unknown face never created an attendance DB record, and valid attendance count is exactly 1.
+        assert _session_attendance_count(db_path, session_id, "22BCS001") == 1
+

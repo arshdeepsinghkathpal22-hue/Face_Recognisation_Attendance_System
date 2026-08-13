@@ -2,7 +2,10 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 
+from fastapi.responses import Response
+
 from app.api.schemas import (
+    AdminDashboardStatsResponse,
     AdminLoginRequest,
     AdminLoginResponse,
     AdminMeResponse,
@@ -12,19 +15,29 @@ from app.api.schemas import (
     AdminSubjectOptionResponse,
     AdminTeacherOptionsResponse,
     AdminTeachersListResponse,
+    RecentAttendanceResponse,
     StudentRegisterResponse,
     StudentResponse,
     StudentSubjectsResponse,
     StudentSubjectsUpdateRequest,
     StudentSubjectResponse,
+    StudentUpdateRequest,
+    SubjectCreateRequest,
+    SubjectResponse,
+    SubjectUpdateRequest,
     TeacherAssignmentResponse,
     TeacherAssignmentRequest,
     TeacherRegisterRequest,
     TeacherRegisterResponse,
     TeacherResponse,
+    TeacherUpdateRequest,
 )
 from app.db import (
+    delete_student,
+    delete_subject,
     delete_teacher_assignment,
+    delete_teacher_user,
+    get_admin_dashboard_stats,
     get_admin_user,
     get_student_with_profile,
     get_teacher_user,
@@ -38,7 +51,10 @@ from app.db import (
     replace_teacher_assignments,
     replace_student_subjects,
     update_admin_password,
+    update_student,
+    update_subject,
     update_teacher_assignment,
+    upsert_subject,
     upsert_teacher_assignment,
     upsert_teacher_user,
 )
@@ -403,3 +419,165 @@ async def register_student_via_admin(
         rejected_images=enrollment["rejected_images"],
         results=enrollment["results"],
     )
+
+
+@router.get("/dashboard-stats", response_model=AdminDashboardStatsResponse)
+def admin_dashboard_stats(
+    request: Request,
+    semester_id: str = "fall-2024",
+    _: AdminResponse = Depends(_get_authenticated_admin),
+) -> AdminDashboardStatsResponse:
+    stats = get_admin_dashboard_stats(semester_id=semester_id, db_path=request.app.state.db_path)
+    return AdminDashboardStatsResponse(**stats)
+
+
+@router.post("/subjects", response_model=SubjectResponse)
+def admin_create_subject(
+    payload: SubjectCreateRequest,
+    request: Request,
+    _: AdminResponse = Depends(_get_authenticated_admin),
+) -> SubjectResponse:
+    db_path = request.app.state.db_path
+    try:
+        upsert_subject(
+            subject_id=payload.id.strip(),
+            semester_id=payload.semester_id.strip(),
+            name=payload.name.strip(),
+            sort_order=payload.sort_order,
+            db_path=db_path,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to create subject: {exc}") from exc
+
+    return SubjectResponse(id=payload.id.strip(), name=payload.name.strip())
+
+
+@router.put("/subjects/{subject_id}", response_model=SubjectResponse)
+def admin_update_subject(
+    subject_id: str,
+    payload: SubjectUpdateRequest,
+    request: Request,
+    semester_id: str = "fall-2024",
+    _: AdminResponse = Depends(_get_authenticated_admin),
+) -> SubjectResponse:
+    db_path = request.app.state.db_path
+    try:
+        update_subject(
+            subject_id=subject_id,
+            semester_id=semester_id,
+            name=payload.name.strip(),
+            sort_order=payload.sort_order,
+            db_path=db_path,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    return SubjectResponse(id=subject_id, name=payload.name.strip())
+
+
+@router.delete("/subjects/{subject_id}")
+def admin_delete_subject(
+    subject_id: str,
+    request: Request,
+    semester_id: str = "fall-2024",
+    _: AdminResponse = Depends(_get_authenticated_admin),
+) -> dict:
+    db_path = request.app.state.db_path
+    try:
+        delete_subject(subject_id=subject_id, semester_id=semester_id, db_path=db_path)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    return {"ok": True}
+
+
+@router.put("/students/{student_id}", response_model=StudentResponse)
+def admin_update_student(
+    student_id: str,
+    payload: StudentUpdateRequest,
+    request: Request,
+    _: AdminResponse = Depends(_get_authenticated_admin),
+) -> StudentResponse:
+    db_path = request.app.state.db_path
+    try:
+        update_student(
+            student_id=student_id,
+            name=payload.name.strip(),
+            branch=payload.branch.strip(),
+            batch=payload.batch.strip(),
+            db_path=db_path,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    return StudentResponse(
+        student_id=student_id,
+        name=payload.name.strip(),
+        branch=payload.branch.strip(),
+        batch=payload.batch.strip() or payload.branch.strip(),
+    )
+
+
+@router.delete("/students/{student_id}")
+def admin_delete_student(
+    student_id: str,
+    request: Request,
+    _: AdminResponse = Depends(_get_authenticated_admin),
+) -> dict:
+    db_path = request.app.state.db_path
+    try:
+        delete_student(student_id=student_id, db_path=db_path)
+        from app.api.teacher import _invalidate_known_faces_cache
+        _invalidate_known_faces_cache()
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    return {"ok": True}
+
+
+@router.delete("/teachers/{teacher_id}")
+def admin_delete_teacher(
+    teacher_id: str,
+    request: Request,
+    _: AdminResponse = Depends(_get_authenticated_admin),
+) -> dict:
+    db_path = request.app.state.db_path
+    try:
+        delete_teacher_user(teacher_id=teacher_id, db_path=db_path)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    return {"ok": True}
+
+
+@router.get("/reports/csv")
+def admin_export_csv_report(
+    request: Request,
+    semester_id: str = "fall-2024",
+    _: AdminResponse = Depends(_get_authenticated_admin),
+):
+    import csv
+    import io
+    db_path = request.app.state.db_path
+    students = list_students(db_path=db_path)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Student ID", "Name", "Branch", "Batch", "Total Held", "Total Attended", "Percentage"])
+
+    for s in students:
+        from app.services.attendance_service import build_attendance_summary
+        try:
+            summary = build_attendance_summary(s["student_id"], semester_id, db_path)
+            pct = f"{summary['total_pct']}%" if summary["total_pct"] is not None else "-"
+            writer.writerow([s["student_id"], s["name"], s["branch"], s["batch"], summary["total_held"], summary["total_attended"], pct])
+        except Exception:
+            continue
+
+    csv_data = output.getvalue()
+    return Response(
+        content=csv_data,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=attendance_report_{semester_id}.csv"},
+    )
+
