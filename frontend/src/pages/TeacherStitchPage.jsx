@@ -479,12 +479,15 @@ export default function TeacherStitchPage({ teacher, onLogout }) {
             } else if (status === "face_mismatch") {
               cameraStatus.textContent = warning || "Face mismatch — student not recognized.";
               cameraStatus.className = "mt-3 text-xs font-semibold text-red-600";
+            } else if (status === "subject_not_registered") {
+              cameraStatus.textContent = warning || "Student is not registered for this subject.";
+              cameraStatus.className = "mt-3 text-xs font-semibold text-amber-600";
+            } else if (status === "batch_mismatch") {
+              cameraStatus.textContent = warning || "Batch mismatch — student is not part of this class.";
+              cameraStatus.className = "mt-3 text-xs font-semibold text-amber-600";
             } else if (status === "confirming") {
               cameraStatus.textContent = warning || `Face recognized — confirming...`;
               cameraStatus.className = "mt-3 text-xs font-semibold text-cyan-700";
-            } else if (status === "batch_mismatch") {
-              cameraStatus.textContent = warning || `Batch mismatch for ${primaryDetection.name || primaryDetection.student_id}.`;
-              cameraStatus.className = "mt-3 text-xs font-semibold text-amber-600";
             } else if (status === "registered" || status === "attendance_marked" || status === "already_marked") {
               const detectionKey = `${status}:${primaryDetection.student_id}`;
               if (!seenDetectionKeys.has(detectionKey)) {
@@ -500,6 +503,9 @@ export default function TeacherStitchPage({ teacher, onLogout }) {
               const registeredCount = logStack.filter((entry) => entry.status === "registered").length;
               cameraStatus.textContent = `${warning || "Attendance marked successfully."} (${registeredCount} student(s) marked)`;
               cameraStatus.className = "mt-3 text-xs font-semibold text-emerald-700";
+            } else {
+              cameraStatus.textContent = warning || `Status: ${status}`;
+              cameraStatus.className = "mt-3 text-xs font-semibold text-gray-700";
             }
           }
         } catch (error) {

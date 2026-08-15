@@ -1115,28 +1115,6 @@ def mark_session_attendance(
         cursor.execute(
             """
             SELECT 1
-            FROM student_subjects
-            WHERE student_id = ?
-                AND semester_id = ?
-                AND subject_id = ?
-            """,
-            (student_id, session["semester_id"], session["subject_id"]),
-        )
-        if cursor.fetchone() is None:
-            return {
-                "ok": False,
-                "inserted": False,
-                "reason": "subject_not_registered",
-                "message": "Student is not registered for this subject.",
-                "session_id": session_id,
-                "student_id": student_id,
-                "subject_id": session["subject_id"],
-                "semester_id": session["semester_id"],
-            }
-
-        cursor.execute(
-            """
-            SELECT 1
             FROM session_attendance
             WHERE session_id = ?
                 AND student_id = ?
@@ -1245,11 +1223,17 @@ def fetch_subject_attendance_counts(
                     subjects.name AS subject_name,
                     subjects.sort_order
                 FROM subjects
-                JOIN student_subjects
-                    ON student_subjects.subject_id = subjects.id
-                    AND student_subjects.semester_id = subjects.semester_id
-                WHERE student_subjects.student_id = ?
-                    AND subjects.semester_id = ?
+                WHERE subjects.semester_id = ?
+                    AND (
+                        NOT EXISTS (
+                            SELECT 1 FROM student_subjects ss
+                            WHERE ss.student_id = ? AND ss.semester_id = subjects.semester_id
+                        )
+                        OR EXISTS (
+                            SELECT 1 FROM student_subjects ss
+                            WHERE ss.student_id = ? AND ss.semester_id = subjects.semester_id AND ss.subject_id = subjects.id
+                        )
+                    )
             ),
             eligible_sessions AS (
                 SELECT
@@ -1355,8 +1339,9 @@ def fetch_subject_attendance_counts(
             ORDER BY rs.sort_order ASC, rs.subject_name ASC
             """,
             (
-                student_id,
                 semester_id,
+                student_id,
+                student_id,
                 student_id,
                 semester_id,
                 student_batch,
@@ -1595,6 +1580,7 @@ def get_session_student_roster(session_id: int, db_path: str | Path = DB_PATH) -
         if not session:
             return []
 
+        session_batch = session["batch"] or ""
         cursor.execute(
             """
             SELECT
@@ -1603,20 +1589,30 @@ def get_session_student_roster(session_id: int, db_path: str | Path = DB_PATH) -
                 COALESCE(sp.branch, '') AS branch,
                 COALESCE(NULLIF(sp.batch, ''), sp.branch, '') AS batch,
                 CASE WHEN sa.present = 1 THEN 1 ELSE 0 END AS present
-            FROM student_subjects ss
-            JOIN students st ON st.student_id = ss.student_id
+            FROM students st
             LEFT JOIN student_profile sp ON sp.student_id = st.student_id
             LEFT JOIN session_attendance sa ON sa.session_id = ? AND sa.student_id = st.student_id
-            WHERE ss.semester_id = ? AND ss.subject_id = ?
+            WHERE (
+                sa.present = 1
+                OR ? = ''
+                OR COALESCE(NULLIF(sp.batch, ''), sp.branch, '') = ?
+                OR UPPER(REPLACE(COALESCE(NULLIF(sp.batch, ''), sp.branch, ''), ' ', '')) = UPPER(REPLACE(?, ' ', ''))
+            )
             ORDER BY st.name ASC
             """,
-            (session_id, session["semester_id"], session["subject_id"]),
+            (session_id, session_batch, session_batch, session_batch),
         )
         rows = cursor.fetchall()
     return [dict(r) for r in rows]
 
 
 def list_student_attendance_history(student_id: str, semester_id: str, db_path: str | Path = DB_PATH) -> list[dict]:
+    student = get_student_with_profile(student_id=student_id, db_path=db_path) or {}
+    student_batch = re.sub(r"\s+", "", str(student.get("batch") or "").upper())
+    student_branch = re.sub(r"\s+", "", str(student.get("branch") or "").upper())
+    section_match = re.search(r"F\d{1,2}", student_batch)
+    student_section = section_match.group(0) if section_match else ""
+
     with get_connection(db_path) as connection:
         cursor = connection.cursor()
         cursor.execute(
@@ -1633,13 +1629,43 @@ def list_student_attendance_history(student_id: str, semester_id: str, db_path: 
                 (SELECT COUNT(*) FROM session_attendance sa_cnt WHERE sa_cnt.session_id = cs.id) AS total_attendance_marked
             FROM class_sessions cs
             JOIN subjects sub ON sub.id = cs.subject_id AND sub.semester_id = cs.semester_id
-            JOIN student_subjects ss ON ss.subject_id = cs.subject_id AND ss.semester_id = cs.semester_id AND ss.student_id = ?
             LEFT JOIN session_attendance sa ON sa.session_id = cs.id AND sa.student_id = ?
             WHERE cs.semester_id = ?
               AND cs.session_date >= '2026-01-01'
+              AND (
+                  sa.present = 1
+                  OR NOT EXISTS (SELECT 1 FROM student_subjects ss WHERE ss.student_id = ? AND ss.semester_id = cs.semester_id)
+                  OR EXISTS (SELECT 1 FROM student_subjects ss WHERE ss.student_id = ? AND ss.semester_id = cs.semester_id AND ss.subject_id = cs.subject_id)
+              )
+              AND (
+                  sa.present = 1
+                  OR ? = ''
+                  OR cs.batch IS NULL
+                  OR cs.batch = ''
+                  OR UPPER(REPLACE(cs.batch, ' ', '')) = ?
+                  OR UPPER(REPLACE(cs.batch, ' ', '')) = ?
+                  OR ? LIKE UPPER(REPLACE(cs.batch, ' ', '')) || '-%'
+                  OR UPPER(REPLACE(cs.batch, ' ', '')) LIKE ? || '-%'
+                  OR (
+                      ? <> ''
+                      AND INSTR(UPPER(REPLACE(cs.batch, ' ', '')), ?) > 0
+                  )
+              )
             ORDER BY cs.session_date DESC, cs.id DESC
             """,
-            (student_id, student_id, semester_id),
+            (
+                student_id,
+                semester_id,
+                student_id,
+                student_id,
+                student_batch,
+                student_batch,
+                student_branch,
+                student_batch,
+                student_batch,
+                student_section,
+                student_section,
+            ),
         )
         rows = cursor.fetchall()
 

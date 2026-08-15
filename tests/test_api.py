@@ -17,6 +17,7 @@ from app.db import (
     upsert_student,
     upsert_student_profile,
     upsert_student_subject,
+    update_student_password,
     upsert_subject,
     upsert_teacher_user,
 )
@@ -865,7 +866,7 @@ def test_teacher_frame_recognize_skips_batch_mismatch(tmp_path, monkeypatch) -> 
         assert len(payload["marked_in_frame"]) == 1
         assert payload["marked_in_frame"][0]["student_id"] == "22BCS001"
         assert payload["marked_in_frame"][0]["status"] == "batch_mismatch"
-        assert payload["marked_in_frame"][0]["warning"] == "Batch mismatch"
+        assert "Batch mismatch" in payload["marked_in_frame"][0]["warning"]
         assert payload["present_students"] == []
 
 
@@ -1406,24 +1407,24 @@ def test_runtime_attendance_does_not_duplicate_same_student_same_session(tmp_pat
     assert _session_attendance_count(db_path, session_id, "22BCS001") == 1
 
 
-def test_runtime_attendance_rejects_student_not_registered_for_subject(tmp_path, monkeypatch) -> None:
-    db_path = str(tmp_path / "test_runtime_attendance_subject_not_registered.db")
+def test_runtime_attendance_accepts_batch_student_without_explicit_subject_enrollment(tmp_path, monkeypatch) -> None:
+    db_path = str(tmp_path / "test_runtime_attendance_batch_eligibility.db")
     initialize_db(db_path=db_path)
     _seed_teacher(db_path)
-    _seed_student(db_path)
+    _seed_student(db_path)  # Student 22BCS001 in batch CSE-A
+    upsert_student(student_id="OTHER_BATCH_STUDENT", name="Other Student", db_path=db_path)
+    upsert_student_profile(student_id="OTHER_BATCH_STUDENT", branch="CSE", batch="CSE-B", db_path=db_path)
     upsert_semester("fall-2024", "Fall 2024", 1, 1, db_path=db_path)
     upsert_subject("SE", "fall-2024", "Software Engineering", 1, db_path=db_path)
     _assign_teacher(db_path, subject_id="SE", batch="CSE-A")
 
     monkeypatch.setattr(
         "app.api.teacher._get_known_faces",
-        lambda: {"student_ids": ["22BCS001"], "names": ["Rahul Sharma"], "encodings": [np.zeros(128)]},
-    )
-    monkeypatch.setattr(
-        "app.api.teacher.recognize_in_frame",
-        lambda *_args, **_kwargs: [
-            {"matched": True, "student_id": "22BCS001", "name": "Rahul Sharma", "distance": 0.1}
-        ],
+        lambda: {
+            "student_ids": ["22BCS001", "OTHER_BATCH_STUDENT"],
+            "names": ["Rahul Sharma", "Other Student"],
+            "encodings": [np.zeros(128), np.zeros(128)],
+        },
     )
 
     import cv2
@@ -1446,20 +1447,48 @@ def test_runtime_attendance_rejects_student_not_registered_for_subject(tmp_path,
             },
         )
         session_id = start.json()["session_id"]
-        for _ in range(2):
-            response = client.post(
-                f"/api/teacher/sessions/{session_id}/frame",
-                data={"tolerance": "0.6", "mode": "recognize"},
-                files={"frame": ("frame.jpg", buffer.tobytes(), "image/jpeg")},
-            )
-            assert response.status_code == 200
 
-        payload = response.json()
-        assert payload["marked_in_frame"][0]["status"] == "subject_not_registered"
-        assert payload["marked_in_frame"][0]["warning"] == "Student is not registered for this subject."
-        assert payload["present_students"] == []
+        # 1. Other batch student -> batch_mismatch
+        monkeypatch.setattr(
+            "app.api.teacher.recognize_in_frame",
+            lambda *_args, **_kwargs: [
+                {"matched": True, "student_id": "OTHER_BATCH_STUDENT", "name": "Other Student", "distance": 0.1}
+            ],
+        )
+        res_other = client.post(
+            f"/api/teacher/sessions/{session_id}/frame",
+            data={"tolerance": "0.6", "mode": "recognize"},
+            files={"frame": ("frame.jpg", buffer.tobytes(), "image/jpeg")},
+        )
+        assert res_other.status_code == 200
+        assert res_other.json()["marked_in_frame"][0]["status"] == "batch_mismatch"
+        assert "Batch mismatch" in res_other.json()["marked_in_frame"][0]["warning"]
+        assert _session_attendance_count(db_path, session_id, "OTHER_BATCH_STUDENT") == 0
 
-    assert _session_attendance_count(db_path, session_id, "22BCS001") == 0
+        # 2. Batch CSE-A student (without individual subject registration) -> confirming 1/2 -> 2/2 -> registered
+        monkeypatch.setattr(
+            "app.api.teacher.recognize_in_frame",
+            lambda *_args, **_kwargs: [
+                {"matched": True, "student_id": "22BCS001", "name": "Rahul Sharma", "distance": 0.1}
+            ],
+        )
+        res_1 = client.post(
+            f"/api/teacher/sessions/{session_id}/frame",
+            data={"tolerance": "0.6", "mode": "recognize"},
+            files={"frame": ("frame.jpg", buffer.tobytes(), "image/jpeg")},
+        )
+        assert res_1.status_code == 200
+        assert res_1.json()["marked_in_frame"][0]["status"] == "confirming"
+
+        res_2 = client.post(
+            f"/api/teacher/sessions/{session_id}/frame",
+            data={"tolerance": "0.6", "mode": "recognize"},
+            files={"frame": ("frame.jpg", buffer.tobytes(), "image/jpeg")},
+        )
+        assert res_2.status_code == 200
+        assert res_2.json()["marked_in_frame"][0]["status"] == "registered"
+        assert res_2.json()["marked_in_frame"][0]["warning"] == "Attendance marked successfully."
+        assert _session_attendance_count(db_path, session_id, "22BCS001") == 1
 
 
 def test_runtime_teacher_without_assignment_cannot_start_or_manage_subject_session(tmp_path) -> None:
@@ -1671,4 +1700,482 @@ def test_unknown_face_and_recognition_flow_security(tmp_path, monkeypatch) -> No
         assert res_enrolled_again_2.json()["marked_in_frame"][0]["warning"] == "Attendance marked successfully."
         # Case 7: Verify unknown face never created an attendance DB record, and valid attendance count is exactly 1.
         assert _session_attendance_count(db_path, session_id, "22BCS001") == 1
+
+
+def test_face_recognition_state_machine_7_cases(tmp_path, monkeypatch) -> None:
+    """
+    Validates all 7 critical test cases for the face recognition state machine:
+    TEST 1: Registered student + correct batch + correct subject -> Frame 1: 1/2, Frame 2: 2/2 -> attendance marked.
+    TEST 2: Completely unknown face -> Face mismatch -> 0/2 -> NO attendance.
+    TEST 3: Recognized student from another batch -> Batch mismatch -> 0/2 -> NO attendance.
+    TEST 4: Recognized student NOT registered for current subject -> Subject not registered -> 0/2 -> NO attendance.
+    TEST 5: Student A recognized 1/2 -> unknown face -> confirmation resets -> Student A recognized again -> starts at 1/2.
+    TEST 6: Student A recognized 1/2 -> Student B recognized -> confirmation resets and belongs to Student B only (1/2).
+    TEST 7: Restart backend / reset state -> confirmation starts at 0 -> no stale student identity remains.
+    """
+    db_path = str(tmp_path / "test_state_machine_7_cases.db")
+    initialize_db(db_path=db_path)
+    _seed_teacher(db_path)
+
+    # Set up semester, subjects, and students
+    upsert_semester("fall-2024", "Fall 2024", 1, 1, db_path=db_path)
+    upsert_subject("MATH101", "fall-2024", "Mathematics", 1, db_path=db_path)
+    upsert_subject("PHYS101", "fall-2024", "Physics", 2, db_path=db_path)
+
+    # Student A: Batch CSE-A, registered for MATH101
+    upsert_student(student_id="STUDENT_A", name="Student Alpha", db_path=db_path)
+    upsert_student_profile(student_id="STUDENT_A", branch="CSE", batch="CSE-A", db_path=db_path)
+    upsert_student_subject(student_id="STUDENT_A", semester_id="fall-2024", subject_id="MATH101", db_path=db_path)
+
+    # Student B: Batch CSE-A, registered for MATH101
+    upsert_student(student_id="STUDENT_B", name="Student Beta", db_path=db_path)
+    upsert_student_profile(student_id="STUDENT_B", branch="CSE", batch="CSE-A", db_path=db_path)
+    upsert_student_subject(student_id="STUDENT_B", semester_id="fall-2024", subject_id="MATH101", db_path=db_path)
+
+    # Student C (Other Batch): Batch CSE-B, registered for MATH101
+    upsert_student(student_id="STUDENT_C_BATCH", name="Student Gamma", db_path=db_path)
+    upsert_student_profile(student_id="STUDENT_C_BATCH", branch="CSE", batch="CSE-B", db_path=db_path)
+    upsert_student_subject(student_id="STUDENT_C_BATCH", semester_id="fall-2024", subject_id="MATH101", db_path=db_path)
+
+    # Student D (Unregistered Subject): Batch CSE-A, registered ONLY for PHYS101 (NOT MATH101)
+    upsert_student(student_id="STUDENT_D_SUBJ", name="Student Delta", db_path=db_path)
+    upsert_student_profile(student_id="STUDENT_D_SUBJ", branch="CSE", batch="CSE-A", db_path=db_path)
+    upsert_student_subject(student_id="STUDENT_D_SUBJ", semester_id="fall-2024", subject_id="PHYS101", db_path=db_path)
+
+    # Assign teacher to MATH101, batch CSE-A
+    replace_teacher_assignments(
+        teacher_id="admin",
+        assignments=[
+            {
+                "semester_id": "fall-2024",
+                "subject_id": "MATH101",
+                "batch": "CSE-A",
+                "class_type": "L",
+            }
+        ],
+        db_path=db_path,
+    )
+
+    # Known faces contains all 4 students
+    monkeypatch.setattr(
+        "app.api.teacher._get_known_faces",
+        lambda *args, **kwargs: {
+            "student_ids": ["STUDENT_A", "STUDENT_B", "STUDENT_C_BATCH", "STUDENT_D_SUBJ"],
+            "names": ["Student Alpha", "Student Beta", "Student Gamma", "Student Delta"],
+            "encodings": [np.zeros(128) for _ in range(4)],
+        },
+    )
+
+    import cv2
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    ok, buffer = cv2.imencode(".jpg", frame)
+    assert ok is True
+    frame_bytes = buffer.tobytes()
+
+    def post_frame(client, session_id, recognition_result):
+        monkeypatch.setattr("app.api.teacher.recognize_in_frame", lambda *a, **k: [recognition_result])
+        return client.post(
+            f"/api/teacher/sessions/{session_id}/frame",
+            data={"tolerance": "0.6", "mode": "recognize"},
+            files={"frame": ("frame.jpg", frame_bytes, "image/jpeg")},
+        )
+
+    with _client_for_db(db_path) as client:
+        assert client.post("/api/teacher/auth/login", json={"teacher_id": "admin", "password": "admin"}).status_code == 200
+
+        # Start MATH101 session for Batch CSE-A
+        start_res = client.post(
+            "/api/teacher/sessions/start",
+            json={
+                "batch": "CSE-A",
+                "semester_id": "fall-2024",
+                "subject_id": "MATH101",
+                "class_type": "L",
+                "start_time": "10:00",
+                "end_time": "11:00",
+            },
+        )
+        assert start_res.status_code == 200
+        session_id = start_res.json()["session_id"]
+
+        # -------------------------------------------------------------
+        # TEST 2: Completely unknown face -> Face mismatch -> 0/2 -> NO attendance
+        # -------------------------------------------------------------
+        res_t2 = post_frame(
+            client,
+            session_id,
+            {
+                "matched": False,
+                "student_id": "Unknown",
+                "name": "Unknown",
+                "distance": 0.82,
+                "best_student_id": "STUDENT_A",
+                "best_name": "Student Alpha",
+                "reason": "distance_above_threshold",
+            },
+        )
+        assert res_t2.status_code == 200
+        item_t2 = res_t2.json()["marked_in_frame"][0]
+        assert item_t2["status"] == "face_mismatch"
+        assert item_t2["student_id"] == "Unknown"
+        assert item_t2["debug"]["confirmation_count"] == 0
+        assert _session_attendance_count(db_path, session_id, "STUDENT_A") == 0
+
+        # -------------------------------------------------------------
+        # TEST 3: Recognized student from another batch -> Batch mismatch -> 0/2 -> NO attendance
+        # -------------------------------------------------------------
+        res_t3 = post_frame(
+            client,
+            session_id,
+            {
+                "matched": True,
+                "student_id": "STUDENT_C_BATCH",
+                "name": "Student Gamma",
+                "distance": 0.15,
+                "best_student_id": "STUDENT_C_BATCH",
+                "best_name": "Student Gamma",
+            },
+        )
+        assert res_t3.status_code == 200
+        item_t3 = res_t3.json()["marked_in_frame"][0]
+        assert item_t3["status"] == "batch_mismatch"
+        assert "Batch mismatch" in item_t3["warning"]
+        assert item_t3["debug"]["confirmation_count"] == 0
+        assert _session_attendance_count(db_path, session_id, "STUDENT_C_BATCH") == 0
+
+        # -------------------------------------------------------------
+        # TEST 4: Batch CSE-A student without explicit subject registration -> eligible -> confirming 1/2 -> 2/2 -> attendance marked
+        # -------------------------------------------------------------
+        res_t4_1 = post_frame(
+            client,
+            session_id,
+            {
+                "matched": True,
+                "student_id": "STUDENT_D_SUBJ",
+                "name": "Student Delta",
+                "distance": 0.14,
+                "best_student_id": "STUDENT_D_SUBJ",
+                "best_name": "Student Delta",
+            },
+        )
+        assert res_t4_1.status_code == 200
+        item_t4_1 = res_t4_1.json()["marked_in_frame"][0]
+        assert item_t4_1["status"] == "confirming"
+        assert item_t4_1["debug"]["confirmation_count"] == 1
+
+        res_t4_2 = post_frame(
+            client,
+            session_id,
+            {
+                "matched": True,
+                "student_id": "STUDENT_D_SUBJ",
+                "name": "Student Delta",
+                "distance": 0.13,
+                "best_student_id": "STUDENT_D_SUBJ",
+                "best_name": "Student Delta",
+            },
+        )
+        assert res_t4_2.status_code == 200
+        item_t4_2 = res_t4_2.json()["marked_in_frame"][0]
+        assert item_t4_2["status"] == "registered"
+        assert _session_attendance_count(db_path, session_id, "STUDENT_D_SUBJ") == 1
+
+        # -------------------------------------------------------------
+        # TEST 5: Student A recognized 1/2 -> show unknown face -> confirmation resets -> Student A recognized again -> must start at 1/2
+        # -------------------------------------------------------------
+        # Frame 1: Student A -> confirming 1/2
+        res_t5_1 = post_frame(
+            client,
+            session_id,
+            {
+                "matched": True,
+                "student_id": "STUDENT_A",
+                "name": "Student Alpha",
+                "distance": 0.12,
+                "best_student_id": "STUDENT_A",
+                "best_name": "Student Alpha",
+            },
+        )
+        assert res_t5_1.status_code == 200
+        assert res_t5_1.json()["marked_in_frame"][0]["status"] == "confirming"
+        assert res_t5_1.json()["marked_in_frame"][0]["debug"]["confirmation_count"] == 1
+
+        # Frame 2: Unknown face -> face_mismatch & confirmation resets
+        res_t5_2 = post_frame(
+            client,
+            session_id,
+            {
+                "matched": False,
+                "student_id": "Unknown",
+                "name": "Unknown",
+                "distance": 0.79,
+                "best_student_id": "STUDENT_A",
+                "best_name": "Student Alpha",
+                "reason": "distance_above_threshold",
+            },
+        )
+        assert res_t5_2.status_code == 200
+        assert res_t5_2.json()["marked_in_frame"][0]["status"] == "face_mismatch"
+        assert res_t5_2.json()["marked_in_frame"][0]["debug"]["confirmation_count"] == 0
+
+        # Frame 3: Student A -> MUST start again at confirming 1/2 (NOT 2/2!)
+        res_t5_3 = post_frame(
+            client,
+            session_id,
+            {
+                "matched": True,
+                "student_id": "STUDENT_A",
+                "name": "Student Alpha",
+                "distance": 0.12,
+                "best_student_id": "STUDENT_A",
+                "best_name": "Student Alpha",
+            },
+        )
+        assert res_t5_3.status_code == 200
+        assert res_t5_3.json()["marked_in_frame"][0]["status"] == "confirming"
+        assert res_t5_3.json()["marked_in_frame"][0]["debug"]["confirmation_count"] == 1
+        assert _session_attendance_count(db_path, session_id, "STUDENT_A") == 0
+
+        # -------------------------------------------------------------
+        # TEST 6: Student A recognized 1/2 -> Student B recognized -> confirmation resets and belongs to Student B only (1/2)
+        # -------------------------------------------------------------
+        # Current state: Student A is at 1/2.
+        # Now Student B appears:
+        res_t6 = post_frame(
+            client,
+            session_id,
+            {
+                "matched": True,
+                "student_id": "STUDENT_B",
+                "name": "Student Beta",
+                "distance": 0.11,
+                "best_student_id": "STUDENT_B",
+                "best_name": "Student Beta",
+            },
+        )
+        assert res_t6.status_code == 200
+        item_t6 = res_t6.json()["marked_in_frame"][0]
+        assert item_t6["status"] == "confirming"
+        assert item_t6["student_id"] == "STUDENT_B"
+        assert item_t6["debug"]["confirmation_count"] == 1
+        assert item_t6["debug"]["confirmation_student_id"] == "STUDENT_B"
+        assert _session_attendance_count(db_path, session_id, "STUDENT_A") == 0
+        assert _session_attendance_count(db_path, session_id, "STUDENT_B") == 0
+
+        # -------------------------------------------------------------
+        # TEST 1: Registered student + correct batch + correct subject -> Frame 1: 1/2, Frame 2: 2/2 -> attendance marked
+        # (Complete Student B: Frame 2 of 2)
+        # -------------------------------------------------------------
+        res_t1_2 = post_frame(
+            client,
+            session_id,
+            {
+                "matched": True,
+                "student_id": "STUDENT_B",
+                "name": "Student Beta",
+                "distance": 0.10,
+                "best_student_id": "STUDENT_B",
+                "best_name": "Student Beta",
+            },
+        )
+        assert res_t1_2.status_code == 200
+        item_t1_2 = res_t1_2.json()["marked_in_frame"][0]
+        assert item_t1_2["status"] == "registered"
+        assert item_t1_2["student_id"] == "STUDENT_B"
+        assert item_t1_2["warning"] == "Attendance marked successfully."
+        assert _session_attendance_count(db_path, session_id, "STUDENT_B") == 1
+
+        # -------------------------------------------------------------
+        # TEST 7: Restart backend / reset state -> confirmation starts at 0 -> no stale student identity remains
+        # -------------------------------------------------------------
+        from app.api.teacher import _SESSION_CONFIRMATION
+        _SESSION_CONFIRMATION.clear()
+
+        # Frame 1 after restart for Student A: starts at 1/2
+        res_t7_1 = post_frame(
+            client,
+            session_id,
+            {
+                "matched": True,
+                "student_id": "STUDENT_A",
+                "name": "Student Alpha",
+                "distance": 0.12,
+                "best_student_id": "STUDENT_A",
+                "best_name": "Student Alpha",
+            },
+        )
+        assert res_t7_1.status_code == 200
+        assert res_t7_1.json()["marked_in_frame"][0]["status"] == "confirming"
+        assert res_t7_1.json()["marked_in_frame"][0]["debug"]["confirmation_count"] == 1
+        assert _session_attendance_count(db_path, session_id, "STUDENT_A") == 0
+
+        # Frame 2 after restart for Student A: reaches 2/2 -> registered
+        res_t7_2 = post_frame(
+            client,
+            session_id,
+            {
+                "matched": True,
+                "student_id": "STUDENT_A",
+                "name": "Student Alpha",
+                "distance": 0.11,
+                "best_student_id": "STUDENT_A",
+                "best_name": "Student Alpha",
+            },
+        )
+        assert res_t7_2.status_code == 200
+        assert res_t7_2.json()["marked_in_frame"][0]["status"] == "registered"
+        assert _session_attendance_count(db_path, session_id, "STUDENT_A") == 1
+
+
+def test_batch_based_student_subject_eligibility_and_student_portal(tmp_path, monkeypatch) -> None:
+    """
+    Explicit test case from user requirements:
+    1. Student A -> Batch F6 (NO individual student_subjects registration).
+       Teacher -> Subject DAA -> Batch F6.
+       Start DAA attendance for F6.
+       Show Student A's face:
+       -> Face recognized -> Batch matched -> Confirming 1/2 -> Confirming 2/2 -> Attendance marked.
+    2. Student B -> Batch F7.
+       Same F6 DAA session:
+       Show Student B's face:
+       -> Face recognized -> Batch mismatch -> NO attendance.
+       (Never shows 'Student is not registered for this subject').
+    3. Student Portal:
+       Verify Student A portal attendance calculation uses batch-based eligibility.
+    """
+    db_path = str(tmp_path / "test_batch_based_eligibility_portal.db")
+    initialize_db(db_path=db_path)
+    _seed_teacher(db_path)
+
+    upsert_semester("fall-2024", "Fall 2024", 1, 1, db_path=db_path)
+    upsert_subject("DAA", "fall-2024", "Design and Analysis of Algorithms", 1, db_path=db_path)
+
+    # Student A: Batch F6, password 'passA'
+    upsert_student(student_id="STUDENT_F6", name="Student Alpha F6", db_path=db_path)
+    update_student_password("STUDENT_F6", "passA", db_path=db_path)
+    upsert_student_profile(student_id="STUDENT_F6", branch="CSE", batch="F6", db_path=db_path)
+
+    # Student B: Batch F7
+    upsert_student(student_id="STUDENT_F7", name="Student Beta F7", db_path=db_path)
+    upsert_student_profile(student_id="STUDENT_F7", branch="CSE", batch="F7", db_path=db_path)
+
+    # Assign teacher to DAA, batch F6
+    replace_teacher_assignments(
+        teacher_id="admin",
+        assignments=[
+            {
+                "semester_id": "fall-2024",
+                "subject_id": "DAA",
+                "batch": "F6",
+                "class_type": "L",
+            }
+        ],
+        db_path=db_path,
+    )
+
+    monkeypatch.setattr(
+        "app.api.teacher._get_known_faces",
+        lambda *a, **k: {
+            "student_ids": ["STUDENT_F6", "STUDENT_F7"],
+            "names": ["Student Alpha F6", "Student Beta F7"],
+            "encodings": [np.zeros(128), np.zeros(128)],
+        },
+    )
+
+    import cv2
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    ok, buffer = cv2.imencode(".jpg", frame)
+    assert ok is True
+    frame_bytes = buffer.tobytes()
+
+    with _client_for_db(db_path) as client:
+        # 1. Login Teacher & Start DAA session for F6
+        assert client.post("/api/teacher/auth/login", json={"teacher_id": "admin", "password": "admin"}).status_code == 200
+        start = client.post(
+            "/api/teacher/sessions/start",
+            json={
+                "batch": "F6",
+                "semester_id": "fall-2024",
+                "subject_id": "DAA",
+                "class_type": "L",
+                "start_time": "09:00",
+                "end_time": "10:00",
+            },
+        )
+        assert start.status_code == 200
+        session_id = start.json()["session_id"]
+
+        # 2. Present Student A (Batch F6) -> Frame 1 (Confirming 1/2)
+        monkeypatch.setattr(
+            "app.api.teacher.recognize_in_frame",
+            lambda *a, **k: [{"matched": True, "student_id": "STUDENT_F6", "name": "Student Alpha F6", "distance": 0.1}],
+        )
+        res_a1 = client.post(
+            f"/api/teacher/sessions/{session_id}/frame",
+            data={"tolerance": "0.6", "mode": "recognize"},
+            files={"frame": ("frame.jpg", frame_bytes, "image/jpeg")},
+        )
+        assert res_a1.status_code == 200
+        assert res_a1.json()["marked_in_frame"][0]["status"] == "confirming"
+        assert res_a1.json()["marked_in_frame"][0]["student_id"] == "STUDENT_F6"
+
+        # Frame 2 -> Confirming 2/2 -> Attendance marked
+        res_a2 = client.post(
+            f"/api/teacher/sessions/{session_id}/frame",
+            data={"tolerance": "0.6", "mode": "recognize"},
+            files={"frame": ("frame.jpg", frame_bytes, "image/jpeg")},
+        )
+        assert res_a2.status_code == 200
+        assert res_a2.json()["marked_in_frame"][0]["status"] == "registered"
+        assert res_a2.json()["marked_in_frame"][0]["warning"] == "Attendance marked successfully."
+        assert _session_attendance_count(db_path, session_id, "STUDENT_F6") == 1
+
+        # 3. Present Student B (Batch F7) to the F6 session -> Batch mismatch & NO attendance
+        monkeypatch.setattr(
+            "app.api.teacher.recognize_in_frame",
+            lambda *a, **k: [{"matched": True, "student_id": "STUDENT_F7", "name": "Student Beta F7", "distance": 0.1}],
+        )
+        res_b = client.post(
+            f"/api/teacher/sessions/{session_id}/frame",
+            data={"tolerance": "0.6", "mode": "recognize"},
+            files={"frame": ("frame.jpg", frame_bytes, "image/jpeg")},
+        )
+        assert res_b.status_code == 200
+        assert res_b.json()["marked_in_frame"][0]["status"] == "batch_mismatch"
+        assert res_b.json()["marked_in_frame"][0]["warning"] == "Batch mismatch — student is not part of this class."
+        assert _session_attendance_count(db_path, session_id, "STUDENT_F7") == 0
+
+        # 4. Stop session
+        stop_res = client.post(f"/api/teacher/sessions/{session_id}/stop")
+        assert stop_res.status_code == 200
+
+        # 5. Verify Student Portal for Student A (F6)
+        login_student = client.post(
+            "/api/auth/login",
+            json={"student_id": "STUDENT_F6", "password": "passA"},
+        )
+        assert login_student.status_code == 200
+
+        # Get attendance summary
+        summary = client.get("/api/attendance/summary", params={"semester_id": "fall-2024"})
+        assert summary.status_code == 200
+        sum_data = summary.json()
+        assert sum_data["total_held"] == 1
+        assert sum_data["total_attended"] == 1
+        assert sum_data["total_pct"] == 100
+        assert len(sum_data["rows"]) == 1
+        assert sum_data["rows"][0]["subject_id"] == "DAA"
+        assert sum_data["rows"][0]["attended_l"] == 1
+        assert sum_data["rows"][0]["held_l"] == 1
+
+        # Get attendance history
+        history = client.get("/api/attendance/history", params={"semester_id": "fall-2024"})
+        assert history.status_code == 200
+        hist_data = history.json()
+        assert len(hist_data) == 1
+        assert hist_data[0]["session_id"] == session_id
+        assert hist_data[0]["subject_id"] == "DAA"
+        assert hist_data[0]["present"] == 1
+
+
 

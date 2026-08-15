@@ -51,7 +51,9 @@ def _sanitize_known_faces(known_faces: dict) -> KnownFaces:
     return sanitized
 
 
-def load_known_faces(encodings_path: str | Path = ENCODINGS_PATH) -> KnownFaces:
+def load_known_faces(encodings_path: str | Path | None = None) -> KnownFaces:
+    if encodings_path is None:
+        encodings_path = ENCODINGS_PATH
     path = Path(encodings_path)
     if not path.exists():
         return _empty_known_faces()
@@ -65,8 +67,10 @@ def load_known_faces(encodings_path: str | Path = ENCODINGS_PATH) -> KnownFaces:
 
 def save_known_faces(
     known_faces: KnownFaces,
-    encodings_path: str | Path = ENCODINGS_PATH,
+    encodings_path: str | Path | None = None,
 ) -> None:
+    if encodings_path is None:
+        encodings_path = ENCODINGS_PATH
     path = Path(encodings_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     sanitized = _sanitize_known_faces(known_faces)
@@ -165,8 +169,12 @@ def save_student_encodings(
     student_id: str,
     name: str,
     encodings: list[np.ndarray],
-    encodings_path: str | Path = ENCODINGS_PATH,
+    encodings_path: str | Path | None = None,
 ) -> None:
+    if encodings_path is None:
+        encodings_path = ENCODINGS_PATH
+    norm_id = str(student_id).strip()
+    norm_name = str(name).strip()
     if len(encodings) < MIN_ENROLLMENT_IMAGES or len(encodings) > MAX_ENROLLMENT_IMAGES:
         raise EnrollmentValidationError(
             f"Enrollment requires {MIN_ENROLLMENT_IMAGES}-{MAX_ENROLLMENT_IMAGES} valid face images"
@@ -176,11 +184,11 @@ def save_student_encodings(
     remaining_indexes = [
         index
         for index, existing_id in enumerate(known_faces["student_ids"])
-        if existing_id != student_id
+        if str(existing_id).strip() != norm_id
     ]
     known_faces = {
-        "student_ids": [known_faces["student_ids"][index] for index in remaining_indexes],
-        "names": [known_faces["names"][index] for index in remaining_indexes],
+        "student_ids": [str(known_faces["student_ids"][index]).strip() for index in remaining_indexes],
+        "names": [str(known_faces["names"][index]).strip() for index in remaining_indexes],
         "encodings": [known_faces["encodings"][index] for index in remaining_indexes],
     }
 
@@ -190,18 +198,42 @@ def save_student_encodings(
             raise EnrollmentValidationError(
                 f"Invalid face encoding dimension; expected {EMBEDDING_SIZE}"
             )
-        known_faces["student_ids"].append(student_id)
-        known_faces["names"].append(name)
+        known_faces["student_ids"].append(norm_id)
+        known_faces["names"].append(norm_name)
         known_faces["encodings"].append(normalized)
     save_known_faces(known_faces, encodings_path)
+
+    # 1. Immediate Persistence Verification on disk
+    path = Path(encodings_path)
+    if path.exists():
+        with path.open("rb") as f:
+            disk_data = pickle.load(f)
+        if isinstance(disk_data, dict):
+            disk_sids = [str(sid).strip() for sid in disk_data.get("student_ids", [])]
+            persisted_count = disk_sids.count(norm_id)
+            if persisted_count != len(encodings):
+                raise RuntimeError(
+                    f"Encoding persistence verification failed for student {norm_id}: "
+                    f"expected {len(encodings)} embeddings, found {persisted_count} on disk at {encodings_path}"
+                )
+            for idx, sid in enumerate(disk_sids):
+                if sid == norm_id:
+                    enc = disk_data.get("encodings", [])[idx]
+                    if enc is None or len(enc) != EMBEDDING_SIZE:
+                        raise RuntimeError(
+                            f"Encoding persistence verification failed for student {norm_id}: "
+                            f"invalid embedding dimension {len(enc) if enc is not None else 'None'}"
+                        )
 
 
 def enroll_from_images(
     student_id: str,
     name: str,
     images_dir: str | Path,
-    encodings_path: str | Path = ENCODINGS_PATH,
+    encodings_path: str | Path | None = None,
 ) -> int:
+    if encodings_path is None:
+        encodings_path = ENCODINGS_PATH
     images_path = Path(images_dir)
     image_files = sorted(
         path
@@ -261,12 +293,24 @@ def recognize_in_frame(
     frame_rgb = cv2.cvtColor(proc_bgr, cv2.COLOR_BGR2RGB)
     frame_rgb = np.ascontiguousarray(frame_rgb)
     face_locations = face_recognition.face_locations(frame_rgb, model="hog")
-    if not face_locations and scale == 1.0:
+    if not face_locations:
         face_locations = face_recognition.face_locations(
             frame_rgb,
             number_of_times_to_upsample=1,
             model="hog",
         )
+    if not face_locations:
+        gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
+        if float(np.mean(gray)) < 70:
+            enhanced_rgb = enhance_low_light_image(frame_rgb)
+            face_locations = face_recognition.face_locations(enhanced_rgb, model="hog")
+            if not face_locations:
+                face_locations = face_recognition.face_locations(
+                    enhanced_rgb, number_of_times_to_upsample=1, model="hog"
+                )
+            if face_locations:
+                frame_rgb = enhanced_rgb
+
     face_encodings = face_recognition.face_encodings(frame_rgb, face_locations)
 
     if scale != 1.0 and face_locations:

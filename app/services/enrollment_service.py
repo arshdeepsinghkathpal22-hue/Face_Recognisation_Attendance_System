@@ -25,10 +25,15 @@ async def enroll_student_uploads(
     batch: str,
     images: list[UploadFile],
     db_path: str,
-    encodings_path: str | Path = ENCODINGS_PATH,
-    students_dir: str | Path = STUDENTS_DIR,
+    encodings_path: str | Path | None = None,
+    students_dir: str | Path | None = None,
     filename_prefix: str = "enroll",
 ) -> dict:
+    if encodings_path is None:
+        encodings_path = ENCODINGS_PATH
+    if students_dir is None:
+        students_dir = STUDENTS_DIR
+
     normalized_student_id = student_id.strip()
     normalized_name = name.strip()
     normalized_branch = branch.strip()
@@ -124,14 +129,34 @@ async def enroll_student_uploads(
 
     student = get_student_with_profile(student_id=normalized_student_id, db_path=db_path)
     if student is None:
-        raise RuntimeError("Student save failed")
+        raise RuntimeError(f"Database student profile save failed for {normalized_student_id}")
+
+    # Explicit Verification of Encodings on Disk
+    from app.face_utils import load_known_faces
+    persisted = load_known_faces(encodings_path)
+    persisted_sids = [str(sid).strip() for sid in persisted.get("student_ids", [])]
+    persisted_count = persisted_sids.count(normalized_student_id)
+    if persisted_count != len(encodings):
+        raise RuntimeError(
+            f"Registration aborted: Encodings not persisted correctly. "
+            f"Expected {len(encodings)} embeddings for {normalized_student_id}, found {persisted_count} in {encodings_path}"
+        )
+
+    # Invalidate cache so attendance session immediately loads new encodings
+    try:
+        from app.api.teacher import _invalidate_known_faces_cache
+        _invalidate_known_faces_cache()
+    except Exception:
+        pass
 
     logger.info(
-        "Student enrolled: student_id=%s name=%s batch=%s encoding_count=%s",
+        "ENROLLMENT_VERIFIED: student_id=%s student_name=%s student_batch=%s valid_photos=%d embeddings_count=%d embedding_dim=128 storage_path=%s persisted=True",
         student["student_id"],
         student["name"],
         student["batch"],
+        len(accepted),
         len(encodings),
+        str(encodings_path),
     )
 
     return {
